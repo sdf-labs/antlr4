@@ -97,6 +97,8 @@
 						<configuration>
 							<sources>
 								<source>${project.build.directory}/generated-sources/antlr4-tool-codegen</source>
+                    <source>${project.build.directory}/generated-sources/antlr3/</source>
+                    <source>${project.build.directory}/generated-sources/tool/src/</source>
 							</sources>
 						</configuration>
 					</execution>
