@@ -1,0 +1,8 @@
+.idea
+.vscode
+/target
+/tests/gen/*.tokens
+/tests/gen/*.interp
+**/*.rs.bk
+*.iml
+Cargo.lock
