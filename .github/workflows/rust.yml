@@ -1,0 +1,142 @@
+name: Rust runtime
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ dev ]
+  pull_request:
+    branches: [ dev ]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_MSRV: "1.96"
+
+defaults:
+  run:
+    working-directory: runtime/Rust
+
+jobs:
+  # Code quality: formatting and lints. Uses stable so clippy/rustfmt are the
+  # current versions.
+  quality:
+    name: fmt + clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime/Rust
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Rust runtime unit/integration tests against checked-in generated parsers.
+  # Runs on the MSRV (1.96) and current stable.
+  unittests:
+    name: cargo test (${{ matrix.rust }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [ "1.96", stable ]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime/Rust
+          key: ${{ matrix.rust }}
+
+      - name: cargo build
+        run: cargo build --all-targets
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo test --all-features
+        run: cargo test --all-features
+
+  # JVM-driven Maven tests. Builds the tool jar once, then runs the Rust target
+  # runtime testsuite (which shells out to cargo/rustc) across the Rust matrix.
+  # The tool's own unit tests are Rust-independent, so they run only once.
+  maven-tests:
+    name: ANTLR tool + Rust runtime testsuite
+    runs-on: ubuntu-24.04
+    # This job drives Maven from the repo root, not runtime/Rust.
+    defaults:
+      run:
+        working-directory: .
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [ "1.96", stable ]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        id: setup-java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: 21
+          cache: 'maven'
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.8.5
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime/Rust
+          key: testsuite-${{ matrix.rust }}
+
+      - name: Build ANTLR tool with Maven
+        run: mvn install -DskipTests=true -Darguments="-Dmaven.javadoc.skip=true" -B -V
+        env:
+          MAVEN_OPTS: -Xmx1G
+
+      # Rust-independent: run the tool's own unit tests on a single matrix entry.
+      - name: Test tool
+        if: matrix.rust == 'stable'
+        working-directory: tool-testsuite
+        run: mvn test
+        env:
+          MAVEN_OPTS: -Xmx1G
+
+      - name: Run Rust runtime testsuite
+        working-directory: runtime-testsuite
+        run: mvn -Dtest='rust.**' test
+        env:
+          MAVEN_OPTS: -Xmx1G
