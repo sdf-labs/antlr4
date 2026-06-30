@@ -7,7 +7,7 @@ Most programmers do not need the information on this page because they will simp
 
 I will assume that the root directory is `/tmp` for the purposes of explaining how to build ANTLR in this document.
 
-*As of 4.6, ANTLR tool and Java-target runtime requires Java 7. As of 4.10, we have verified that the tool itself builds with Java 8 and 11.*
+*As of 4.13.3-DBT135, the ANTLR tool and Java-target runtime require Java 17+. The build itself uses JDK 21.*
 
 # Get the source
 
@@ -34,7 +34,7 @@ If you are starting from a clean, minimum Ubuntu OS, check your environment.
 $ sudo apt-get update
 $ # Get Java
 $ java > /dev/null 2>&1
-$ if [[ "$?" != "0" ]]; then sudo apt install -y openjdk-11-jre-headless; fi
+$ if [[ "$?" != "0" ]]; then sudo apt install -y openjdk-17-jre-headless; fi
 $ # Get Mvn
 $ mvn > /dev/null 2>&1
 $ if [[ "$?" != "0" ]]; then sudo apt install -y maven; fi
