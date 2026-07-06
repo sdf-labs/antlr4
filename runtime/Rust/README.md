@@ -1,6 +1,6 @@
 # dbt-antlr4
-[![Crate](https://flat.badgen.net/crates/v/dbt-antlr4)](https://crates.io/crates/dbt-antlr4/1.0.0)
-[![docs](https://flat.badgen.net/badge/docs.rs/v1.0.0)](https://docs.rs/dbt-antlr4/1.0.0)
+[![Crate](https://flat.badgen.net/crates/v/dbt-antlr4)](https://crates.io/crates/dbt-antlr4/2.0.0)
+[![docs](https://flat.badgen.net/badge/docs.rs/v2.0.0)](https://docs.rs/dbt-antlr4/2.0.0)
 
 
 > **NOTE**:
@@ -35,7 +35,7 @@ Then add following to `Cargo.toml` of the crate from which generated parser
 is going to be used:
 ```toml 
 [dependencies]
-dbt-antlr4 = "1.0.0"
+dbt-antlr4 = "2.0.0"
 ```
   
 

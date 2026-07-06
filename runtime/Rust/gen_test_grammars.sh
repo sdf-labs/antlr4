@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TOOL_VERSION="4.13.3-DBT135"
-ANTLR_PATH="../../../tool/target/antlr4-${TOOL_VERSION}-complete.jar"
+TOOL_VERSION="2.0.0"
+ANTLR_PATH="../../../tool/target/dbt-antlr4-${TOOL_VERSION}-complete.jar"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 declare -a GRAMMARS=(
