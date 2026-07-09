@@ -494,6 +494,14 @@ where
                     i += 1;
                 }
                 None => {
+                    // No viable transition. If some alternative already
+                    // finished the decision entry rule, predict it and let
+                    // the parser report a more precise error at the actual
+                    // mismatch point - mirroring adaptive_predict's
+                    // finished-decision-entry-rule recovery.
+                    if let Some(alt) = dfa.fallback(s) {
+                        return Ok(alt);
+                    }
                     let start = self.input.lt(1).map(|t| OwningToken::from(t as &dyn Token));
                     let offending = self.input.lt(i).map(|t| OwningToken::from(t as &dyn Token));
                     return Err(match (start, offending) {

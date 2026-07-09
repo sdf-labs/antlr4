@@ -41,6 +41,14 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 public abstract class RuntimeTests {
 	protected abstract RuntimeRunner createRuntimeRunner();
 
+	/**
+	 * Subclasses may exclude descriptors that do not apply to their
+	 * configuration (e.g. the Rust static-DFA suite skips descriptors that
+	 * introspect the adaptive prediction engine). Skipped descriptors are
+	 * not materialized as tests at all.
+	 */
+	protected boolean skipDescriptor(RuntimeTestDescriptor descriptor) { return false; }
+
 	private final static HashMap<String, RuntimeTestDescriptor[]> testDescriptors = new HashMap<>();
 	private final static Map<String, STGroup> cachedTargetTemplates = new HashMap<>();
 	private final static StringRenderer rendered = new StringRenderer();
@@ -96,6 +104,9 @@ public abstract class RuntimeTests {
 			ArrayList<DynamicNode> descriptorTests = new ArrayList<>();
 			RuntimeTestDescriptor[] descriptors = testDescriptors.get(group);
 			for (RuntimeTestDescriptor descriptor : descriptors) {
+				if (skipDescriptor(descriptor)) {
+					continue;
+				}
 				descriptorTests.add(dynamicTest(descriptor.name, descriptor.uri, () -> {
 					try (RuntimeRunner runner = createRuntimeRunner()) {
 						String errorMessage = test(descriptor, runner);

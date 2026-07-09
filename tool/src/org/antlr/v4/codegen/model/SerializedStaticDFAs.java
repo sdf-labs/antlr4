@@ -34,12 +34,13 @@ import java.util.Map;
  *   numStates
  *   numEdgeInts
  *   accepts[numStates]              (predicted alt per state; 0 = non-accept)
+ *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
  * </pre>
  */
 public class SerializedStaticDFAs extends OutputModelObject {
-	public static final int FORMAT_VERSION = 2;
+	public static final int FORMAT_VERSION = 3;
 
 	public final int numTables;
 	/** Base64 text segments of the serialized blob, one rendered per line. */
@@ -77,6 +78,7 @@ public class SerializedStaticDFAs extends OutputModelObject {
 			data.add(dfa.numStates);
 			data.add(dfa.edges.length);
 			for (int v : dfa.accepts) data.add(v);
+			for (int v : dfa.fallbacks) data.add(v);
 			for (int v : dfa.edgeOffsets) data.add(v);
 			for (int v : dfa.edges) data.add(v);
 			comments.add("decision "+dfa.decision+": "

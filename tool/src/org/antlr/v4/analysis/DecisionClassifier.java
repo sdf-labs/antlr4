@@ -143,32 +143,59 @@ public class DecisionClassifier {
 
 	/**
 	 * Taint bits stored in {@link ATNConfig#reachesIntoOuterContext} marking
-	 * configurations derived through an over-approximation. The field is
-	 * chosen because every ATNConfig copy constructor propagates it,
-	 * ATNConfigSet's merge takes the max of it, and equals/hashCode ignore it
-	 * - so the taint flows to closure descendants and survives merging
-	 * without affecting DFA state identity. (This classifier never uses the
-	 * field's runtime meaning; note max-merge is bitwise-correct here only
-	 * because tainted values compare greater than untainted ones and we only
-	 * test for non-zero.)
+	 * how configurations were derived. The field is chosen because every
+	 * ATNConfig copy constructor propagates it, ATNConfigSet's merge takes
+	 * the max of it, and equals/hashCode ignore it - so the taint flows to
+	 * closure descendants and survives merging without affecting DFA state
+	 * identity. (This classifier never uses the field's runtime meaning.)
 	 *
-	 * <p>Over-approximations are one-sided: they can only keep alternatives
-	 * alive longer than the runtime would, so uniquely-predicted accepts
-	 * remain correct, but a conflict involving tainted configurations may be
-	 * an analysis artifact the runtime never encounters and must not be
-	 * trusted as an exact ambiguity.</p>
+	 * <p>Because merging takes the numeric max rather than the bitwise or,
+	 * the "hard" bits ({@link #PRECPRED_TAINT}, {@link #WIDENED_TAINT}) are
+	 * assigned above {@link #BOUNDARY_TAINT}: a merge can only lose the
+	 * boundary bit in favor of a hard bit, and hard-tainted conflicts are
+	 * untrusted regardless. When no hard taint is present in a
+	 * configuration set, the boundary bits are exact.</p>
+	 *
+	 * <p>Over-approximations (widening, assumed-true precedence predicates)
+	 * are one-sided: they can only keep alternatives alive longer than the
+	 * runtime would, so uniquely-predicted accepts remain correct, but any
+	 * conflict involving such configurations may be an analysis artifact the
+	 * runtime never encounters and must not be trusted as an exact
+	 * ambiguity.</p>
 	 */
-	protected static final int WIDENED_TAINT = 1;
+	/**
+	 * Taint for configurations derived by popping through the decision-entry
+	 * wildcard context (the SLL boundary): their continuations come from the
+	 * grammar-wide FOLLOW links rather than the real parse stack. This
+	 * mirrors the runtime's own {@code reachesIntoOuterContext} bookkeeping.
+	 *
+	 * <p>An exact conflict is context-independent - and therefore a true
+	 * ambiguity resolvable to the minimum alternative - only if boundary
+	 * usage is <em>uniform</em>: either no conflicting configuration popped
+	 * through the boundary (the conflict is internal to the decision's
+	 * sub-language) or all of them did (the real outer context substitutes
+	 * into every alternative identically). Mixed usage is the dangling-else
+	 * shape: one alternative reaches the conflict only via phantom follow
+	 * contexts, and full-context prediction may kill it.</p>
+	 *
+	 * <p>Boundary-tainted configurations also identify the alternatives
+	 * that "finished the decision entry rule", used for the per-state
+	 * error-avoidance fallback (see {@link StaticDFA#fallbacks}), mirroring
+	 * ParserATNSimulator#getAltThatFinishedDecisionEntryRule.</p>
+	 */
+	protected static final int BOUNDARY_TAINT = 1;
 
 	/**
 	 * Taint for configurations that traversed a precedence predicate as
-	 * epsilon (i.e., assumed {@code precpred(...)} true). Same one-sided
-	 * soundness argument as {@link #WIDENED_TAINT}.
+	 * epsilon (i.e., assumed {@code precpred(...)} true).
 	 */
 	protected static final int PRECPRED_TAINT = 2;
 
-	/** All taint bits that make a conflict untrusted. */
-	protected static final int ANY_TAINT = WIDENED_TAINT | PRECPRED_TAINT;
+	/** Taint for configurations whose calling context was widened. */
+	protected static final int WIDENED_TAINT = 4;
+
+	/** Taint bits that make any conflict untrusted outright. */
+	protected static final int HARD_TAINT = WIDENED_TAINT | PRECPRED_TAINT;
 
 	/** Hard cap on DFA states per decision (per construction attempt). */
 	public int maxDfaStates = 2000;
@@ -287,6 +314,7 @@ public class DecisionClassifier {
 		List<List<Integer>> edges = new ArrayList<List<Integer>>();
 		List<List<IntervalSet>> edgeLabels = new ArrayList<List<IntervalSet>>();
 		List<Integer> acceptAlts = new ArrayList<Integer>(); // 0 = not an accept state
+		List<Integer> fallbackAlts = new ArrayList<Integer>(); // 0 = none
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
 		Set<ATNConfig> startBusy = new HashSet<ATNConfig>();
@@ -300,6 +328,7 @@ public class DecisionClassifier {
 		edges.add(new ArrayList<Integer>());
 		edgeLabels.add(new ArrayList<IntervalSet>());
 		acceptAlts.add(0);
+		fallbackAlts.add(0);
 
 		Deque<Integer> work = new ArrayDeque<Integer>();
 		work.add(0);
@@ -322,27 +351,59 @@ public class DecisionClassifier {
 				Collection<BitSet> altSubsets = PredictionMode.getConflictingAltSubsets(cs);
 				boolean exact = PredictionMode.allSubsetsConflict(altSubsets)
 					&& PredictionMode.allSubsetsEqual(altSubsets);
-				boolean tainted = false;
+				boolean hardTainted = false;
+				boolean anyBoundary = false;
+				boolean allBoundary = true;
 				for (ATNConfig c : cs) {
-					if ((c.reachesIntoOuterContext & ANY_TAINT) != 0) { tainted = true; break; }
+					if ((c.reachesIntoOuterContext & HARD_TAINT) != 0) hardTainted = true;
+					if ((c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0) anyBoundary = true;
+					else allBoundary = false;
 				}
+				// A conflict is trusted as an exact ambiguity only if it is
+				// exact, involves no over-approximated (hard-tainted)
+				// configs, and its boundary usage is uniform: either the
+				// conflict is internal to the decision's sub-language, or
+				// every config popped through the decision boundary so the
+				// real outer context substitutes into all alternatives
+				// identically. Mixed usage (dangling-else shape) means
+				// full-context prediction may kill the boundary-only
+				// alternative, so min-alt is not behavior-preserving.
+				boolean untrusted = hardTainted || (anyBoundary && !allBoundary);
 				BitSet conflicting = PredictionMode.getAlts(altSubsets);
-				if (tainted) res.approxConflicts.add(conflicting);
+				if (untrusted) res.approxConflicts.add(conflicting);
 				else if (exact) res.exactAmbigConflicts.add(conflicting);
 				else res.contextSensitiveConflicts.add(conflicting);
-				if (!tainted && exact) {
+				if (!untrusted && exact) {
 					// trusted exact ambiguity: min-alt resolution matches
 					// both runtime SLL and full-context LL
 					acceptAlts.set(d, conflicting.nextSetBit(0));
 				}
 				else if (abortOnUntrustedConflict) {
-					// no widening level can make this decision table-eligible
+					// not a trusted exact ambiguity: no widening level can
+					// make this decision table-eligible
 					res.numDfaStates = states.size();
 					res.category = Category.CONTEXT_SENSITIVE;
 					return false;
 				}
 				continue;
 			}
+
+			// Error-avoidance fallback for this (expanding) state: the
+			// minimum alternative that already "finished the decision entry
+			// rule" (popped through the decision boundary). When prediction
+			// later dies at this state on a token matching no edge, the
+			// walker returns this alternative instead of failing, letting
+			// the parser report a more precise error at the mismatch point -
+			// mirroring adaptivePredict's
+			// getAltThatFinishedDecisionEntryRule recovery.
+			int fallback = 0;
+			for (ATNConfig c : cs) {
+				if ((c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
+					&& (fallback == 0 || c.alt < fallback)) {
+					fallback = c.alt;
+				}
+			}
+			fallbackAlts.set(d, fallback);
 
 			for (LabeledSuccessor ls : successors(configs, res)) {
 				Integer id = stateIds.get(ls.configs);
@@ -354,6 +415,7 @@ public class DecisionClassifier {
 					edges.add(new ArrayList<Integer>());
 					edgeLabels.add(new ArrayList<IntervalSet>());
 					acceptAlts.add(0);
+					fallbackAlts.add(0);
 					work.add(id);
 				}
 				edges.get(d).add(id);
@@ -383,7 +445,7 @@ public class DecisionClassifier {
 
 		if (res.category == Category.LLK || res.category == Category.LLSTAR
 			|| res.category == Category.EXACT_AMBIG) {
-			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, cyclic, res.k);
+			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, fallbackAlts, cyclic, res.k);
 		}
 		return false;
 	}
@@ -393,13 +455,16 @@ public class DecisionClassifier {
 										   List<List<IntervalSet>> edgeLabels,
 										   List<List<Integer>> edgeTargets,
 										   List<Integer> acceptAlts,
+										   List<Integer> fallbackAlts,
 										   boolean cyclic, int maxK) {
 		int n = edgeTargets.size();
 		int[] accepts = new int[n];
+		int[] fallbacks = new int[n];
 		int[] offsets = new int[n+1];
 		List<int[]> triples = new ArrayList<int[]>();
 		for (int s = 0; s < n; s++) {
 			accepts[s] = acceptAlts.get(s);
+			fallbacks[s] = fallbackAlts.get(s);
 			offsets[s] = triples.size()*3;
 			List<int[]> stateTriples = new ArrayList<int[]>();
 			for (int e = 0; e < edgeTargets.get(s).size(); e++) {
@@ -419,7 +484,7 @@ public class DecisionClassifier {
 			edges[i*3+1] = triples.get(i)[1];
 			edges[i*3+2] = triples.get(i)[2];
 		}
-		return new StaticDFA(decision, n, accepts, offsets, edges, cyclic, maxK);
+		return new StaticDFA(decision, n, accepts, fallbacks, offsets, edges, cyclic, maxK);
 	}
 
 	/** A DFA edge under construction: token class label -> successor config set. */
@@ -562,9 +627,12 @@ public class DecisionClassifier {
 				}
 				return;
 			}
-			// Wildcard context: keep the stop-state config (it participates in
-			// stop-state conflict detection and matches EOF), and additionally
-			// chase FOLLOW links via the epsilon transitions below.
+			// Wildcard context: popping through the decision-entry boundary.
+			// Taint the config (its descendants inherit through the copy
+			// constructors), keep it (it participates in stop-state conflict
+			// detection and matches EOF), and additionally chase FOLLOW
+			// links via the epsilon transitions below.
+			config.reachesIntoOuterContext |= BOUNDARY_TAINT;
 			configs.add(config);
 		}
 

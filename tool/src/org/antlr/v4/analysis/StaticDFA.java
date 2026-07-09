@@ -31,6 +31,15 @@ public class StaticDFA {
 	public final int numStates;
 	/** Predicted alternative per state; 0 = not an accept state. */
 	public final int[] accepts;
+	/**
+	 * Error-avoidance fallback per state; 0 = none. When prediction dies at
+	 * a state on a token matching no edge, the walker returns this
+	 * alternative (the minimum one that already finished the decision entry
+	 * rule) instead of failing, so the parser reports a more precise error
+	 * at the actual mismatch point - mirroring adaptivePredict's
+	 * getAltThatFinishedDecisionEntryRule recovery.
+	 */
+	public final int[] fallbacks;
 	/** Index of each state's first edge int in {@link #edges}; length numStates+1. */
 	public final int[] edgeOffsets;
 	/** Flattened (lo, hi, target) triples, sorted by lo within each state. */
@@ -40,11 +49,12 @@ public class StaticDFA {
 	/** Max lookahead depth if acyclic; -1 if cyclic. */
 	public final int maxK;
 
-	public StaticDFA(int decision, int numStates, int[] accepts,
+	public StaticDFA(int decision, int numStates, int[] accepts, int[] fallbacks,
 					 int[] edgeOffsets, int[] edges, boolean cyclic, int maxK) {
 		this.decision = decision;
 		this.numStates = numStates;
 		this.accepts = accepts;
+		this.fallbacks = fallbacks;
 		this.edgeOffsets = edgeOffsets;
 		this.edges = edges;
 		this.cyclic = cyclic;
