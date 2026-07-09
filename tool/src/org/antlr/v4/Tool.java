@@ -115,6 +115,7 @@ public class Tool {
 	public boolean longMessages = false;
 	public boolean exact_output_dir = false;
 	public boolean decision_report = false;
+	public boolean static_dfa = false;
 
     public final static Option[] optionDefs = {
 		new Option("outputDirectory",             "-o", OptionArgType.STRING, "specify output directory where all output is generated"),
@@ -139,6 +140,7 @@ public class Tool {
 		new Option("log",                         "-Xlog", "dump lots of logging info to antlr-timestamp.log"),
 	    new Option("exact_output_dir",            "-Xexact-output-dir", "all output goes into -o dir regardless of paths/package"),
 	    new Option("decision_report",             "-Xdecision-report", "classify every parser decision by required static lookahead (LL(1)/LL(k)/LL(*)/ambiguous/context-sensitive) and print a report"),
+	    new Option("static_dfa",                  "-Xstatic-dfa", "precompute SLL prediction DFAs and generate table-driven prediction instead of adaptivePredict where provably behavior-preserving (Java/Rust targets)"),
 	};
 
 	// helper vars for option management
@@ -411,6 +413,11 @@ public class Tool {
 
 		if ( decision_report && !g.isLexer() ) {
 			System.out.print(DecisionClassifier.report(g));
+		}
+
+		// PRECOMPUTE STATIC SLL PREDICTION TABLES FOR SAFE NON-LL(1) DECISIONS
+		if ( static_dfa && !force_atn && !g.isLexer() && g.atn!=null ) {
+			g.staticDecisionDFAs = DecisionClassifier.buildTables(g);
 		}
 
 		// GENERATE CODE

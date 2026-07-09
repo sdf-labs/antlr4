@@ -236,7 +236,7 @@ fileHeader(grammarFileName, ANTLRVersion) ::= <<
 // Generated from <grammarFileName> by ANTLR <ANTLRVersion>
 >>
 
-Parser(parser, funcs, atn, sempredFuncs, superClass) ::= <<
+Parser(parser, funcs, atn, sempredFuncs, superClass, staticDFAs) ::= <<
 <if(parser.file.genContexts)>
 <Parser_Contexts(...)>
 <elseif(parser.file.genDFA)>
@@ -260,7 +260,7 @@ abstract class <parser.name>DFA {
 }
 >>
 
-Parser_(parser, funcs, atn, sempredFuncs, ctor, superClass) ::= <<
+Parser_(parser, funcs, atn, sempredFuncs, ctor, superClass, staticDFAs) ::= <<
 @SuppressWarnings({"all", "warnings", "unchecked", "unused", "cast", "CheckReturnValue", "this-escape"})
 public class <parser.name> extends <superClass; null="Parser"> {
 	static { RuntimeMetaData.checkVersion("<file.ANTLRVersion>", RuntimeMetaData.VERSION); }
@@ -321,6 +321,10 @@ case <f.ruleIndex>:
 	public static final ATN _ATN = <parser.name>DFA._ATN;
 <else>
 	<atn>
+<endif>
+<if(staticDFAs)>
+
+	<staticDFAs>
 <endif>
 }
 >>
@@ -640,6 +644,82 @@ case <i><if(!choice.ast.greedy)>+1<endif>:
 	setState(<choice.loopBackStateNumber>); <! loopback/exit decision !>
 	_errHandler.sync(this);
 	_alt = getInterpreter().adaptivePredict(_input,<choice.decision>,_ctx);
+} while ( _alt!=<choice.exitAlt> && _alt!=org.antlr.v4.runtime.atn.ATN.INVALID_ALT_NUMBER );
+>>
+
+// Statically-precomputed SLL prediction (-Xstatic-dfa): same shapes as the
+// adaptive blocks above, but the decision is driven by a precomputed table
+// via Parser.dfaPredict instead of adaptivePredict. All tables are packed
+// into one compact serialized blob deserialized at class initialization, in
+// the same vein as _serializedATN.
+
+SerializedStaticDFAs(dfas) ::= <<
+// <dfas.numTables> static SLL prediction tables:
+<dfas.tableComments:{c |//   <c>}; separator="\n">
+private static final String[] _serializedStaticDFA = {
+	<dfas.segments:{s |"<s>"}; separator=",\n">
+};
+private static final org.antlr.v4.runtime.atn.StaticDFATables _staticDFAs =
+	org.antlr.v4.runtime.atn.StaticDFATables.deserialize(_serializedStaticDFA);
+>>
+
+staticDFAPredict(choice) ::= "dfaPredict(_staticDFAs, <choice.decision>)"
+
+DFAAltBlock(choice, preamble, alts, error) ::= <<
+setState(<choice.stateNumber>);
+_errHandler.sync(this);
+<if(choice.label)><labelref(choice.label)> = _input.LT(1);<endif>
+<preamble; separator="\n">
+switch ( <staticDFAPredict(choice)> ) {
+<alts:{alt |
+case <i>:
+	<alt>
+	break;}; separator="\n">
+}
+>>
+
+DFAOptionalBlock(choice, alts, error) ::= <<
+setState(<choice.stateNumber>);
+_errHandler.sync(this);
+switch ( <staticDFAPredict(choice)> ) {
+<alts:{alt |
+case <i>:
+	<alt>
+	break;}; separator="\n">
+}
+>>
+
+DFAStarBlock(choice, alts, sync, iteration) ::= <<
+setState(<choice.stateNumber>);
+_errHandler.sync(this);
+_alt = <staticDFAPredict(choice)>;
+while ( _alt!=<choice.exitAlt> && _alt!=org.antlr.v4.runtime.atn.ATN.INVALID_ALT_NUMBER ) {
+	if ( _alt==1 ) {
+		<iteration>
+		<alts> <! should only be one !>
+	}
+	setState(<choice.loopBackStateNumber>);
+	_errHandler.sync(this);
+	_alt = <staticDFAPredict(choice)>;
+}
+>>
+
+DFAPlusBlock(choice, alts, error) ::= <<
+setState(<choice.blockStartStateNumber>); <! alt block decision !>
+_errHandler.sync(this);
+_alt = 1;
+do {
+	switch (_alt) {
+	<alts:{alt|
+case <i>:
+	<alt>
+	break;}; separator="\n">
+	default:
+		<error>
+	}
+	setState(<choice.loopBackStateNumber>); <! loopback/exit decision !>
+	_errHandler.sync(this);
+	_alt = <staticDFAPredict(choice)>;
 } while ( _alt!=<choice.exitAlt> && _alt!=org.antlr.v4.runtime.atn.ATN.INVALID_ALT_NUMBER );
 >>
 

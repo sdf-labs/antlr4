@@ -61,6 +61,9 @@ public class JavaTarget extends Target {
 	public boolean supportsSplitParser() { return true; }
 
 	@Override
+	public boolean supportsStaticDFA() { return true; }
+
+	@Override
 	public String getRecognizerFileName(SourceType sourceType) {
 		ST extST = getTemplates().getInstanceOf("codeFileExtension");
 		String recognizerName = gen.g.getRecognizerName();

@@ -173,6 +173,11 @@ impl<CS: ConfigSet<'static> + 'static> ATNSimulatorMan<CS> {
         self.allocation_limit_bytes.load(Ordering::Relaxed)
     }
 
+    /// The ATN this manager was built around.
+    pub fn atn(&self) -> &'static ATN {
+        self.atn
+    }
+
     #[allow(dead_code)]
     pub(crate) fn reset_dfa(&self) {
         let is_resetting = self.is_resetting.swap(true, Ordering::AcqRel);
