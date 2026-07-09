@@ -36,7 +36,7 @@ use std::sync::LazyLock;
 use std::rc::Rc;
 use std::ops::{DerefMut, Deref};
 
-dbt_antlr4::check_version!("1","3");
+dbt_antlr4::check_version!("2","0");
 pub const CSV_T__0:i32=1; 
 pub const CSV_T__1:i32=2; 
 pub const CSV_T__2:i32=3; 
