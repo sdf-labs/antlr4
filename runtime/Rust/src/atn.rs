@@ -9,6 +9,7 @@ use crate::interval_set::IntervalSet;
 use crate::interval_set::IntervalSetBuf;
 use crate::lexer_action::LexerAction;
 use crate::ll1_analyzer::LL1Analyzer;
+use crate::static_dfa::StaticDFATables;
 use crate::token::Token;
 use crate::token::{TOKEN_EOF, TOKEN_EPSILON};
 use crate::transition::RuleTransition;
@@ -42,6 +43,12 @@ pub struct ATN {
 
     pub rule_to_token_type: Vec<i32>,
 
+    /// Statically-precomputed SLL prediction tables (`-Xstatic-dfa`),
+    /// decoded from the section following the ATN in the serialized blob;
+    /// empty when the parser was generated without them. See
+    /// [`crate::static_dfa`].
+    pub static_dfas: StaticDFATables,
+
     states: Vec<Pin<Box<ATNState>>>,
 }
 
@@ -68,6 +75,7 @@ impl ATN {
             rule_to_start_state: Vec::new(),
             rule_to_stop_state: Vec::new(),
             rule_to_token_type: Vec::new(),
+            static_dfas: StaticDFATables::empty(),
             states: Vec::new(),
         }
     }

@@ -68,6 +68,9 @@ public abstract class Recognizer extends OutputModelObject {
 		if ( gen.getTarget() instanceof JavaTarget ) {
 			atn = new SerializedJavaATN(factory, g.atn);
 		}
+		else if ( gen.getTarget().isATNSerializedAsBase64VarInts() ) {
+			atn = new SerializedBase64ATN(factory, g.atn);
+		}
 		else {
 			atn = new SerializedATN(factory, g.atn);
 		}

@@ -129,6 +129,12 @@ public class DecisionClassifier {
 		public final List<BitSet> contextSensitiveConflicts = new ArrayList<BitSet>();
 		/** Conflicts involving widening-tainted configs: possibly analysis artifacts; untrusted. */
 		public final List<BitSet> approxConflicts = new ArrayList<BitSet>();
+		/**
+		 * The serialized prediction table, populated only when the decision
+		 * is statically decidable with behavior preservation (category LLK,
+		 * LLSTAR, or trusted EXACT_AMBIG).
+		 */
+		public StaticDFA dfa;
 
 		public Result(DecisionState decisionState) {
 			this.decisionState = decisionState;
@@ -189,6 +195,15 @@ public class DecisionClassifier {
 
 	/** Wall-clock budget per construction attempt; exceeding it counts as overflow. */
 	public long attemptBudgetMs = 5000;
+
+	/**
+	 * When set (table-building mode), abandon a decision as soon as an
+	 * untrusted (tainted or non-exact) conflict is found: no widening level
+	 * can make such a decision table-eligible, so there is no point burning
+	 * the state/time budget on it. Leave false for classification reports,
+	 * where complete conflict inventories are wanted.
+	 */
+	public boolean abortOnUntrustedConflict = false;
 
 	protected final Grammar g;
 	protected final ATN atn;
@@ -270,7 +285,8 @@ public class DecisionClassifier {
 		Map<Set<ATNConfig>, Integer> stateIds = new HashMap<Set<ATNConfig>, Integer>();
 		List<Set<ATNConfig>> states = new ArrayList<Set<ATNConfig>>();
 		List<List<Integer>> edges = new ArrayList<List<Integer>>();
-		List<Boolean> terminal = new ArrayList<Boolean>(); // accept or conflict; no expansion
+		List<List<IntervalSet>> edgeLabels = new ArrayList<List<IntervalSet>>();
+		List<Integer> acceptAlts = new ArrayList<Integer>(); // 0 = not an accept state
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
 		Set<ATNConfig> startBusy = new HashSet<ATNConfig>();
@@ -282,7 +298,8 @@ public class DecisionClassifier {
 		stateIds.put(start, 0);
 		states.add(start);
 		edges.add(new ArrayList<Integer>());
-		terminal.add(Boolean.FALSE);
+		edgeLabels.add(new ArrayList<IntervalSet>());
+		acceptAlts.add(0);
 
 		Deque<Integer> work = new ArrayDeque<Integer>();
 		work.add(0);
@@ -297,11 +314,11 @@ public class DecisionClassifier {
 
 			BitSet alts = PredictionMode.getAlts(cs);
 			if (alts.cardinality() <= 1) {
-				terminal.set(d, Boolean.TRUE); // accept (or dead) state
+				// accept (or, for cardinality 0, dead/error) state
+				acceptAlts.set(d, Math.max(0, alts.nextSetBit(0)));
 				continue;
 			}
 			if (PredictionMode.hasSLLConflictTerminatingPrediction(PredictionMode.SLL, cs)) {
-				terminal.set(d, Boolean.TRUE);
 				Collection<BitSet> altSubsets = PredictionMode.getConflictingAltSubsets(cs);
 				boolean exact = PredictionMode.allSubsetsConflict(altSubsets)
 					&& PredictionMode.allSubsetsEqual(altSubsets);
@@ -313,21 +330,34 @@ public class DecisionClassifier {
 				if (tainted) res.approxConflicts.add(conflicting);
 				else if (exact) res.exactAmbigConflicts.add(conflicting);
 				else res.contextSensitiveConflicts.add(conflicting);
+				if (!tainted && exact) {
+					// trusted exact ambiguity: min-alt resolution matches
+					// both runtime SLL and full-context LL
+					acceptAlts.set(d, conflicting.nextSetBit(0));
+				}
+				else if (abortOnUntrustedConflict) {
+					// no widening level can make this decision table-eligible
+					res.numDfaStates = states.size();
+					res.category = Category.CONTEXT_SENSITIVE;
+					return false;
+				}
 				continue;
 			}
 
-			for (Set<ATNConfig> succ : successors(configs, res)) {
-				Integer id = stateIds.get(succ);
+			for (LabeledSuccessor ls : successors(configs, res)) {
+				Integer id = stateIds.get(ls.configs);
 				if (id == null) {
 					if (states.size() >= maxDfaStates) { overflow = true; break; }
 					id = states.size();
-					stateIds.put(succ, id);
-					states.add(succ);
+					stateIds.put(ls.configs, id);
+					states.add(ls.configs);
 					edges.add(new ArrayList<Integer>());
-					terminal.add(Boolean.FALSE);
+					edgeLabels.add(new ArrayList<IntervalSet>());
+					acceptAlts.add(0);
 					work.add(id);
 				}
 				edges.get(d).add(id);
+				edgeLabels.get(d).add(ls.label);
 			}
 		}
 
@@ -350,15 +380,66 @@ public class DecisionClassifier {
 		else if (!res.exactAmbigConflicts.isEmpty()) res.category = Category.EXACT_AMBIG;
 		else if (cyclic) res.category = Category.LLSTAR;
 		else res.category = Category.LLK;
+
+		if (res.category == Category.LLK || res.category == Category.LLSTAR
+			|| res.category == Category.EXACT_AMBIG) {
+			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, cyclic, res.k);
+		}
 		return false;
 	}
 
+	/** Serialize the recorded DFA into the flat table form used by codegen. */
+	protected static StaticDFA toStaticDFA(int decision,
+										   List<List<IntervalSet>> edgeLabels,
+										   List<List<Integer>> edgeTargets,
+										   List<Integer> acceptAlts,
+										   boolean cyclic, int maxK) {
+		int n = edgeTargets.size();
+		int[] accepts = new int[n];
+		int[] offsets = new int[n+1];
+		List<int[]> triples = new ArrayList<int[]>();
+		for (int s = 0; s < n; s++) {
+			accepts[s] = acceptAlts.get(s);
+			offsets[s] = triples.size()*3;
+			List<int[]> stateTriples = new ArrayList<int[]>();
+			for (int e = 0; e < edgeTargets.get(s).size(); e++) {
+				int target = edgeTargets.get(s).get(e);
+				for (Interval iv : edgeLabels.get(s).get(e).getIntervals()) {
+					stateTriples.add(new int[]{iv.a, iv.b, target});
+				}
+			}
+			// disjoint by construction; sort by lo for binary search
+			stateTriples.sort((a, b) -> Integer.compare(a[0], b[0]));
+			triples.addAll(stateTriples);
+		}
+		offsets[n] = triples.size()*3;
+		int[] edges = new int[triples.size()*3];
+		for (int i = 0; i < triples.size(); i++) {
+			edges[i*3] = triples.get(i)[0];
+			edges[i*3+1] = triples.get(i)[1];
+			edges[i*3+2] = triples.get(i)[2];
+		}
+		return new StaticDFA(decision, n, accepts, offsets, edges, cyclic, maxK);
+	}
+
+	/** A DFA edge under construction: token class label -> successor config set. */
+	protected static final class LabeledSuccessor {
+		final IntervalSet label;
+		final Set<ATNConfig> configs;
+		LabeledSuccessor(IntervalSet label, Set<ATNConfig> configs) {
+			this.label = label;
+			this.configs = configs;
+		}
+	}
+
 	/**
-	 * Compute the distinct successor configuration sets of a DFA state, one
-	 * per equivalence class of tokens (never per token). The labels
-	 * themselves are not retained; Phase 0 only needs the DFA's shape.
+	 * Compute the successor configuration sets of a DFA state, one edge per
+	 * distinct successor set, labeled with the full token class (never per
+	 * token). Token classes are the equivalence classes of the partition
+	 * induced by the states' move labels; classes that close to the same
+	 * successor set are merged into a single edge with the union label.
 	 */
-	protected Collection<Set<ATNConfig>> successors(Set<ATNConfig> configs, Result res) {
+	protected List<LabeledSuccessor> successors(Set<ATNConfig> configs, Result res) {
 		// collect non-epsilon moves
 		List<IntervalSet> labels = new ArrayList<IntervalSet>();
 		List<ATNConfig> moveConfigs = new ArrayList<ATNConfig>();
@@ -396,22 +477,39 @@ public class DecisionClassifier {
 			}
 		}
 
-		// partition the token space into equivalence classes over move labels
-		TreeSet<Integer> boundaries = new TreeSet<Integer>();
+		// partition the token space into equivalence classes over move labels:
+		// between two consecutive boundary points every token behaves alike
+		TreeSet<Integer> boundarySet = new TreeSet<Integer>();
 		for (IntervalSet label : labels) {
 			for (Interval iv : label.getIntervals()) {
-				boundaries.add(iv.a);
-				boundaries.add(iv.b+1);
+				boundarySet.add(iv.a);
+				boundarySet.add(iv.b+1);
 			}
 		}
+		Integer[] boundaries = boundarySet.toArray(new Integer[0]);
 
-		Map<BitSet, Set<ATNConfig>> byMoveKey = new LinkedHashMap<BitSet, Set<ATNConfig>>();
-		for (int p : boundaries) {
+		// accumulate the full label of each class (key = set of covering moves)
+		Map<BitSet, IntervalSet> classLabels = new LinkedHashMap<BitSet, IntervalSet>();
+		for (int b = 0; b < boundaries.length-1; b++) {
+			int lo = boundaries[b];
+			int hi = boundaries[b+1]-1;
 			BitSet key = new BitSet(labels.size());
 			for (int m = 0; m < labels.size(); m++) {
-				if (labels.get(m).contains(p)) key.set(m);
+				if (labels.get(m).contains(lo)) key.set(m);
 			}
-			if (key.isEmpty() || byMoveKey.containsKey(key)) continue;
+			if (key.isEmpty()) continue;
+			IntervalSet classLabel = classLabels.get(key);
+			if (classLabel == null) {
+				classLabel = new IntervalSet();
+				classLabels.put(key, classLabel);
+			}
+			classLabel.add(lo, hi);
+		}
+
+		// close each class; merge classes that reach the same successor set
+		Map<Set<ATNConfig>, IntervalSet> bySuccessor = new LinkedHashMap<Set<ATNConfig>, IntervalSet>();
+		for (Map.Entry<BitSet, IntervalSet> e : classLabels.entrySet()) {
+			BitSet key = e.getKey();
 			Set<ATNConfig> succ = new LinkedHashSet<ATNConfig>();
 			Set<ATNConfig> busy = new HashSet<ATNConfig>();
 			for (int m = key.nextSetBit(0); m >= 0; m = key.nextSetBit(m+1)) {
@@ -423,10 +521,21 @@ public class DecisionClassifier {
 					closure(new ATNConfig(c, moveTargets.get(m)), succ, busy, res);
 				}
 			}
-			byMoveKey.put(key, canonical(succ));
+			succ = canonical(succ);
+			IntervalSet merged = bySuccessor.get(succ);
+			if (merged == null) {
+				bySuccessor.put(succ, e.getValue());
+			}
+			else {
+				merged.addAll(e.getValue());
+			}
 		}
-		// distinct successor sets (different token classes may close to the same set)
-		return new LinkedHashSet<Set<ATNConfig>>(byMoveKey.values());
+
+		List<LabeledSuccessor> result = new ArrayList<LabeledSuccessor>(bySuccessor.size());
+		for (Map.Entry<Set<ATNConfig>, IntervalSet> e : bySuccessor.entrySet()) {
+			result.add(new LabeledSuccessor(e.getValue(), e.getKey()));
+		}
+		return result;
 	}
 
 	/**
@@ -602,6 +711,35 @@ public class DecisionClassifier {
 		}
 		memo[s] = max;
 		return max;
+	}
+
+	// ---------------------------------------------------------------------
+	// Table building (codegen entry point)
+	// ---------------------------------------------------------------------
+
+	/**
+	 * Build serialized prediction tables for every decision that is
+	 * statically decidable with behavior preservation and not already served
+	 * by the LL(1) fast path. Everything else (the "unsafe residue":
+	 * context-sensitive/overflow/predicated/non-greedy/LR-precedence
+	 * decisions) is left to {@code adaptivePredict}.
+	 */
+	public static Map<Integer, StaticDFA> buildTables(Grammar g) {
+		DecisionClassifier classifier = new DecisionClassifier(g);
+		classifier.abortOnUntrustedConflict = true;
+		Map<Integer, StaticDFA> tables = new LinkedHashMap<Integer, StaticDFA>();
+		for (DecisionState s : g.atn.decisionToState) {
+			// the LL(1) fast path already covers disjoint decisions
+			if (g.decisionLOOK != null && s.decision < g.decisionLOOK.size()
+				&& AnalysisPipeline.disjoint(g.decisionLOOK.get(s.decision))) {
+				continue;
+			}
+			Result r = classifier.classify(s);
+			if (r.dfa != null) {
+				tables.put(s.decision, r.dfa);
+			}
+		}
+		return tables;
 	}
 
 	// ---------------------------------------------------------------------

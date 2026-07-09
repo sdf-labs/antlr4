@@ -248,7 +248,7 @@ fileHeader(grammarFileName, ANTLRVersion) ::= <<
 // Generated from <grammarFileName> by ANTLR <ANTLRVersion>
 >>
 
-Parser(parser, funcs, atn, sempredFuncs, superClass) ::= <<
+Parser(parser, funcs, atn, sempredFuncs, superClass, staticDFAs) ::= <<
 dbt_antlr4::check_version!("2","0");
 <if(parser.tokens)>
 <parser.tokens:{k | pub const <parser.grammarName>_<k>:i32=<parser.tokens.(k)>;}; separator=" \n">
@@ -760,6 +760,76 @@ loop {
 	<self()>.base.set_state(<choice.loopBackStateNumber>); <! loopback/exit decision !>
 	<self()>.err_handler.sync(&mut <self()>.base)?;
 	_alt = <self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)?;
+	if _alt==<choice.exitAlt> || _alt==INVALID_ALT { break }
+}
+>>
+
+// Statically-precomputed SLL prediction (-Xstatic-dfa): same shapes as the
+// adaptive blocks above, but the decision is driven by a precomputed table
+// via BaseParser::dfa_predict instead of adaptive_predict. The tables are
+// carried inside the serialized ATN blob (see SerializedBase64ATN) and
+// decoded together with the ATN into its static_dfas field.
+
+staticDFAPredict(choice) ::= "<self()>.base.dfa_predict(<choice.decision>)?"
+
+DFAAltBlock(choice, preamble, alts, error) ::= <<
+<self()>.base.set_state(<choice.stateNumber>);
+<self()>.err_handler.sync(&mut <self()>.base)?;
+<if(choice.label)><labelref(choice.label,{ = <self()>.base.input.lt(1).map(|t| t as _);})><endif>
+<preamble; separator="\n">
+match <staticDFAPredict(choice)> {
+<alts:{alt |
+	<i> =>{
+		<alt>
+	\}
+	}; separator=",\n">
+	_ => {}
+}
+>>
+
+DFAOptionalBlock(choice, alts, error) ::= <<
+<self()>.base.set_state(<choice.stateNumber>);
+<self()>.err_handler.sync(&mut <self()>.base)?;
+match <staticDFAPredict(choice)> {
+<alts:{alt |
+	x if x == <i> =>{
+		<alt>
+	\}
+	}; separator="\n">
+	_ => {}
+}
+>>
+
+DFAStarBlock(choice, alts, sync, iteration) ::= <<
+<self()>.base.set_state(<choice.stateNumber>);
+<self()>.err_handler.sync(&mut <self()>.base)?;
+_alt = <staticDFAPredict(choice)>;
+while { _alt!=<choice.exitAlt> && _alt!=INVALID_ALT } {
+	if _alt==1 {
+		<iteration>
+		<alts> <! should only be one !>
+	}
+	<self()>.base.set_state(<choice.loopBackStateNumber>);
+	<self()>.err_handler.sync(&mut <self()>.base)?;
+	_alt = <staticDFAPredict(choice)>;
+}
+>>
+
+DFAPlusBlock(choice, alts, error) ::= <<
+<self()>.base.set_state(<choice.blockStartStateNumber>); <! alt block decision !>
+<self()>.err_handler.sync(&mut <self()>.base)?;
+_alt = 1;
+loop {
+	match _alt {
+	<alts:{alt|
+    x if x == <i> =>
+	<alt>
+	}; separator=",\n">
+	_ => Err(<error>)?
+	}
+	<self()>.base.set_state(<choice.loopBackStateNumber>); <! loopback/exit decision !>
+	<self()>.err_handler.sync(&mut <self()>.base)?;
+	_alt = <staticDFAPredict(choice)>;
 	if _alt==<choice.exitAlt> || _alt==INVALID_ALT { break }
 }
 >>
@@ -1361,13 +1431,17 @@ where
 <atn>
 >>
 
-SerializedATN(model) ::= <<
+SerializedBase64ATN(model) ::= <<
+<if(model.tableComments)>
+// the serialized ATN is followed by <model.numTables> static SLL prediction tables (-Xstatic-dfa):
+<model.tableComments:{c |//   <c>}; separator="\n">
+<endif>
 static ATN_SIMULATOR_MANAGER: LazyLock\<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));
 static _ATN: LazyLock\<ATN> =
-    LazyLock::new(|| ATNDeserializer::new(None).deserialize(&mut _serializedATN.iter()));
-static _serializedATN: LazyLock\<Vec\<i32>\> = LazyLock::new(|| vec![
-    <model.serialized; separator=", ", wrap>
-]);
+    LazyLock::new(|| ATNDeserializer::new(None).deserialize_compact(&_serializedATN));
+static _serializedATN: [&'static str; <length(model.segments)>] = [
+    <model.segments:{s |"<s>"}; separator=",\n">
+];
 >>
 
 /** Using a type to init value map, try to init a type; if not in table

@@ -658,4 +658,20 @@ public abstract class Target {
 
 	/** @since 4.14 */
     public boolean supportsSplitParser() { return false; }
+
+	/**
+	 * Whether this target's templates and runtime implement table-driven
+	 * static DFA prediction (-Xstatic-dfa): the SerializedStaticDFAs and
+	 * DFA*Block templates plus a dfaPredict runtime helper.
+	 */
+	public boolean supportsStaticDFA() { return false; }
+
+	/**
+	 * Whether this target's serialized ATN is emitted as a compact
+	 * base64/varint blob (see {@link org.antlr.v4.codegen.CompactSerializer})
+	 * decoded by the target runtime, instead of a plain integer list. The
+	 * target's templates must render the SerializedBase64ATN model and its
+	 * runtime must provide the matching decoder.
+	 */
+	public boolean isATNSerializedAsBase64VarInts() { return false; }
 }

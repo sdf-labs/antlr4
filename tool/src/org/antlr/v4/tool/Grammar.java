@@ -188,6 +188,14 @@ public class Grammar implements AttributeResolver {
 
 	public List<IntervalSet[]> decisionLOOK;
 
+	/**
+	 * Statically-precomputed SLL prediction tables (see
+	 * {@link org.antlr.v4.analysis.DecisionClassifier#buildTables}), keyed by
+	 * decision number; populated only with -Xstatic-dfa. Decisions absent
+	 * from this map fall back to the LL(1) fast path or adaptivePredict.
+	 */
+	public Map<Integer, org.antlr.v4.analysis.StaticDFA> staticDecisionDFAs;
+
 	public final Tool tool;
 
 	/** Token names and literal tokens like "void" are uniquely indexed.

@@ -103,6 +103,8 @@ pub mod lexer_atn_simulator;
 pub mod parser;
 pub mod parser_atn_simulator;
 mod prediction_mode;
+pub mod serialized_ints;
+pub mod static_dfa;
 pub mod token;
 pub mod trees;
 mod utils;

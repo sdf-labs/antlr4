@@ -13,6 +13,10 @@ import org.antlr.v4.codegen.model.AltBlock;
 import org.antlr.v4.codegen.model.Choice;
 import org.antlr.v4.codegen.model.CodeBlockForAlt;
 import org.antlr.v4.codegen.model.CodeBlockForOuterMostAlt;
+import org.antlr.v4.codegen.model.DFAAltBlock;
+import org.antlr.v4.codegen.model.DFAOptionalBlock;
+import org.antlr.v4.codegen.model.DFAPlusBlock;
+import org.antlr.v4.codegen.model.DFAStarBlock;
 import org.antlr.v4.codegen.model.InvokeRule;
 import org.antlr.v4.codegen.model.LL1AltBlock;
 import org.antlr.v4.codegen.model.LL1OptionalBlock;
@@ -199,6 +203,9 @@ public class ParserFactory extends DefaultOutputModelFactory {
 		if ( !g.tool.force_atn && AnalysisPipeline.disjoint(g.decisionLOOK.get(decision)) ) {
 			c = getLL1ChoiceBlock(blkAST, alts);
 		}
+		else if ( hasStaticDFA(decision) ) {
+			c = new DFAAltBlock(this, blkAST, alts);
+		}
 		else {
 			c = getComplexChoiceBlock(blkAST, alts);
 		}
@@ -235,9 +242,42 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			if ( AnalysisPipeline.disjoint(g.decisionLOOK.get(decision)) ) {
 				return getLL1EBNFBlock(ebnfRoot, alts);
 			}
+
+			if ( hasStaticDFA(decision) ) {
+				return getDFAEBNFBlock(ebnfRoot, alts);
+			}
 		}
 
 		return getComplexEBNFBlock(ebnfRoot, alts);
+	}
+
+	/**
+	 * Is a statically-precomputed prediction table available (and usable by
+	 * this target) for the given decision? See -Xstatic-dfa.
+	 */
+	protected boolean hasStaticDFA(int decision) {
+		return g.staticDecisionDFAs!=null
+			&& g.staticDecisionDFAs.containsKey(decision)
+			&& gen.getTarget().supportsStaticDFA();
+	}
+
+	/** Like getComplexEBNFBlock but driving the decision from a static DFA table. */
+	protected Choice getDFAEBNFBlock(GrammarAST ebnfRoot, List<CodeBlockForAlt> alts) {
+		int ebnf = 0;
+		if ( ebnfRoot!=null ) ebnf = ebnfRoot.getType();
+		Choice c = null;
+		switch ( ebnf ) {
+			case ANTLRParser.OPTIONAL :
+				c = new DFAOptionalBlock(this, ebnfRoot, alts);
+				break;
+			case ANTLRParser.CLOSURE :
+				c = new DFAStarBlock(this, ebnfRoot, alts);
+				break;
+			case ANTLRParser.POSITIVE_CLOSURE :
+				c = new DFAPlusBlock(this, ebnfRoot, alts);
+				break;
+		}
+		return c;
 	}
 
 	@Override

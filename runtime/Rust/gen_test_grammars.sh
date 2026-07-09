@@ -13,6 +13,7 @@ declare -a GRAMMARS=(
     "XMLLexer"
     "SimpleLR"
     "Labels"
+    "StaticDFA"
 #    "FHIRPath"
 )
 
@@ -24,6 +25,7 @@ declare -a ADDITIONAL_ARGS=(
     ""
     ""
     ""
+    "-Xstatic-dfa"
 )
 
 for i in "${!GRAMMARS[@]}"; do

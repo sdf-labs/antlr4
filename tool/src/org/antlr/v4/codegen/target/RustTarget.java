@@ -94,4 +94,10 @@ public class RustTarget extends Target {
 	public int getInlineTestSetWordSize() {
 		return 32;
 	}
+
+	@Override
+	public boolean supportsStaticDFA() { return true; }
+
+	@Override
+	public boolean isATNSerializedAsBase64VarInts() { return true; }
 }

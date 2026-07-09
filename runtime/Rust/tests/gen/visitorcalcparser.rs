@@ -860,16 +860,10 @@ where
 
 static ATN_SIMULATOR_MANAGER: LazyLock<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));
 static _ATN: LazyLock<ATN> =
-    LazyLock::new(|| ATNDeserializer::new(None).deserialize(&mut _serializedATN.iter()));
-static _serializedATN: LazyLock<Vec<i32>> = LazyLock::new(|| vec![
-    4, 1, 6, 22, 2, 0, 7, 0, 2, 1, 7, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 1, 17, 8, 1, 10, 1, 12, 1, 
-    20, 9, 1, 1, 1, 0, 1, 2, 2, 0, 2, 0, 2, 1, 0, 2, 3, 1, 0, 4, 5, 21, 
-    0, 4, 1, 0, 0, 0, 2, 7, 1, 0, 0, 0, 4, 5, 3, 2, 1, 0, 5, 6, 5, 0, 0, 
-    1, 6, 1, 1, 0, 0, 0, 7, 8, 6, 1, -1, 0, 8, 9, 5, 1, 0, 0, 9, 18, 1, 
-    0, 0, 0, 10, 11, 10, 2, 0, 0, 11, 12, 7, 0, 0, 0, 12, 17, 3, 2, 1, 3, 
-    13, 14, 10, 1, 0, 0, 14, 15, 7, 1, 0, 0, 15, 17, 3, 2, 1, 2, 16, 10, 
-    1, 0, 0, 0, 16, 13, 1, 0, 0, 0, 17, 20, 1, 0, 0, 0, 18, 16, 1, 0, 0, 
-    0, 18, 19, 1, 0, 0, 0, 19, 3, 1, 0, 0, 0, 20, 18, 1, 0, 0, 0, 2, 16, 
-    18
-]);
+    LazyLock::new(|| ATNDeserializer::new(None).deserialize_compact(&_serializedATN));
+static _serializedATN: [&'static str; 4] = [
+    "CAIMLAQADgAEAg4CAgACAAIAAgICAgICAgICAgICAgICAgICCgIiEAIUAhgCKBICAgIAAgQEAAQABAIA",
+    "BAYCAAgKKgAIAgAAAAQOAgAAAAgKBgQCAAoMCgAAAgwCAgAAAA4QDAIBABASCgIAABIkAgAAABQWFAQA",
+    "ABYYDgAAABgiBgQCBhocFAIAABweDgIAAB4iBgQCBCAUAgAAACAaAgAAACIoAgAAACQgAgAAACQmAgAA",
+    "ACYGAgAAACgkAgAAAAQgJA=="
+];

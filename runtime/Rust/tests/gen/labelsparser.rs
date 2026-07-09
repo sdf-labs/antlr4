@@ -1431,27 +1431,14 @@ where
 
 static ATN_SIMULATOR_MANAGER: LazyLock<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));
 static _ATN: LazyLock<ATN> =
-    LazyLock::new(|| ATNDeserializer::new(None).deserialize(&mut _serializedATN.iter()));
-static _serializedATN: LazyLock<Vec<i32>> = LazyLock::new(|| vec![
-    4, 1, 11, 49, 2, 0, 7, 0, 2, 1, 7, 1, 2, 2, 7, 2, 1, 0, 1, 0, 1, 0, 
-    1, 0, 1, 0, 3, 0, 12, 8, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
-    1, 1, 1, 1, 1, 1, 3, 1, 24, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 1, 42, 
-    8, 1, 10, 1, 12, 1, 45, 9, 1, 1, 2, 1, 2, 1, 2, 0, 1, 2, 3, 0, 2, 4, 
-    0, 0, 52, 0, 11, 1, 0, 0, 0, 2, 23, 1, 0, 0, 0, 4, 46, 1, 0, 0, 0, 6, 
-    12, 3, 2, 1, 0, 7, 8, 5, 1, 0, 0, 8, 9, 3, 4, 2, 0, 9, 10, 5, 2, 0, 
-    0, 10, 12, 1, 0, 0, 0, 11, 6, 1, 0, 0, 0, 11, 7, 1, 0, 0, 0, 12, 1, 
-    1, 0, 0, 0, 13, 14, 6, 1, -1, 0, 14, 15, 5, 10, 0, 0, 15, 24, 6, 1, 
-    -1, 0, 16, 17, 5, 5, 0, 0, 17, 18, 3, 2, 1, 0, 18, 19, 5, 6, 0, 0, 19, 
-    20, 6, 1, -1, 0, 20, 24, 1, 0, 0, 0, 21, 22, 5, 9, 0, 0, 22, 24, 6, 
-    1, -1, 0, 23, 13, 1, 0, 0, 0, 23, 16, 1, 0, 0, 0, 23, 21, 1, 0, 0, 0, 
-    24, 43, 1, 0, 0, 0, 25, 26, 10, 7, 0, 0, 26, 27, 5, 3, 0, 0, 27, 28, 
-    3, 2, 1, 8, 28, 29, 6, 1, -1, 0, 29, 42, 1, 0, 0, 0, 30, 31, 10, 6, 
-    0, 0, 31, 32, 5, 4, 0, 0, 32, 33, 3, 2, 1, 7, 33, 34, 6, 1, -1, 0, 34, 
-    42, 1, 0, 0, 0, 35, 36, 10, 3, 0, 0, 36, 37, 5, 7, 0, 0, 37, 42, 6, 
-    1, -1, 0, 38, 39, 10, 2, 0, 0, 39, 40, 5, 8, 0, 0, 40, 42, 6, 1, -1, 
-    0, 41, 25, 1, 0, 0, 0, 41, 30, 1, 0, 0, 0, 41, 35, 1, 0, 0, 0, 41, 38, 
-    1, 0, 0, 0, 42, 45, 1, 0, 0, 0, 43, 41, 1, 0, 0, 0, 43, 44, 1, 0, 0, 
-    0, 44, 3, 1, 0, 0, 0, 45, 43, 1, 0, 0, 0, 46, 47, 3, 0, 0, 0, 47, 5, 
-    1, 0, 0, 0, 4, 11, 23, 41, 43
-]);
+    LazyLock::new(|| ATNDeserializer::new(None).deserialize_compact(&_serializedATN));
+static _serializedATN: [&'static str; 8] = [
+    "CAIWYgQADgAEAg4CBAQOBAIAAgACAAIAAgAGABgQAAICAgICAgICAgICAgICAgICAgICBgIwEAICAgIC",
+    "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgoCVBACFAIYAloSAgIEAgQCBAACBAYABAgAAGgAFgIA",
+    "AAAELgIAAAAIXAIAAAAMGAYEAgAOEAoCAAAQEgYIBAASFAoEAAAUGAIAAAAWDAIAAAAWDgIAAAAYAgIA",
+    "AAAaHAwCAQAcHgoUAAAeMAwCAQAgIgoKAAAiJAYEAgAkJgoMAAAmKAwCAQAoMAIAAAAqLAoSAAAsMAwC",
+    "AQAuGgIAAAAuIAIAAAAuKgIAAAAwVgIAAAAyNBQOAAA0NgoGAAA2OAYEAhA4OgwCAQA6VAIAAAA8PhQM",
+    "AAA+QAoIAABAQgYEAg5CRAwCAQBEVAIAAABGSBQGAABISgoOAABKVAwCAQBMThQEAABOUAoQAABQVAwC",
+    "AQBSMgIAAABSPAIAAABSRgIAAABSTAIAAABUWgIAAABWUgIAAABWWAIAAABYBgIAAABaVgIAAABcXgYA",
+    "AABeCgIAAAAIFi5SVg=="
+];
