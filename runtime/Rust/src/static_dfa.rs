@@ -25,13 +25,14 @@
 //!   numStates
 //!   numEdgeInts
 //!   accepts[numStates]             (predicted alt per state; 0 = non-accept)
+//!   fallbacks[numStates]           (error-avoidance alt per state; 0 = none)
 //!   edgeOffsets[numStates+1]       (index of each state's first edge i32)
 //!   edges[numEdgeInts]             ((lo, hi, target) triples, lo-sorted per state)
 //! ```
 
 /// Format version understood by this runtime; must match the tool's
 /// `SerializedStaticDFAs.FORMAT_VERSION`.
-pub const FORMAT_VERSION: i32 = 2;
+pub const FORMAT_VERSION: i32 = 3;
 
 /// The deserialized static prediction tables of one generated parser.
 ///
@@ -46,10 +47,10 @@ pub const FORMAT_VERSION: i32 = 2;
 /// consumes one token of lookahead and the input is finite (EOF included in
 /// the token space).
 pub struct StaticDFATables {
-    /// Concatenated per-table data: accepts, edge_offsets, edges.
+    /// Concatenated per-table data: accepts, fallbacks, edge_offsets, edges.
     data: Vec<i32>,
-    /// Per-table (accepts_at, edge_offsets_at, edges_at) indexes into `data`.
-    metas: Vec<(usize, usize, usize)>,
+    /// Per-table (accepts_at, fallbacks_at, edge_offsets_at, edges_at) indexes into `data`.
+    metas: Vec<(usize, usize, usize, usize)>,
     /// decision number -> table index, or -1.
     decision_to_table: Vec<i32>,
 }
@@ -59,6 +60,11 @@ pub struct StaticDFATables {
 pub struct StaticDFATable<'a> {
     /// Predicted alternative per state; 0 = not an accept state.
     pub accepts: &'a [i32],
+    /// Error-avoidance fallback per state; 0 = none. Returned when a
+    /// lookahead token matches no edge, so the parser fails later with a
+    /// more precise error at the mismatch point - mirroring
+    /// `adaptive_predict`'s finished-decision-entry-rule recovery.
+    pub fallbacks: &'a [i32],
     /// Index of each state's first edge `i32` in `edges`; `num_states + 1` entries.
     pub edge_offsets: &'a [i32],
     /// Flattened `(lo, hi, target)` triples, sorted by `lo` within each state.
@@ -111,6 +117,10 @@ impl StaticDFATables {
             for _ in 0..num_states {
                 data.push(next());
             }
+            let fallbacks_at = data.len();
+            for _ in 0..num_states {
+                data.push(next());
+            }
             let edge_offsets_at = data.len();
             for _ in 0..num_states + 1 {
                 data.push(next());
@@ -119,7 +129,7 @@ impl StaticDFATables {
             for _ in 0..num_edge_ints {
                 data.push(next());
             }
-            metas.push((accepts_at, edge_offsets_at, edges_at));
+            metas.push((accepts_at, fallbacks_at, edge_offsets_at, edges_at));
         }
         drop(next);
         assert!(ints.next().is_none(), "trailing data in static DFA blob");
@@ -137,14 +147,15 @@ impl StaticDFATables {
     pub fn table(&self, decision: i32) -> StaticDFATable<'_> {
         let t = self.decision_to_table[decision as usize];
         assert!(t >= 0, "no static DFA table for decision {}", decision);
-        let (accepts_at, edge_offsets_at, edges_at) = self.metas[t as usize];
+        let (accepts_at, fallbacks_at, edge_offsets_at, edges_at) = self.metas[t as usize];
         let end = self
             .metas
             .get(t as usize + 1)
             .map(|m| m.0)
             .unwrap_or(self.data.len());
         StaticDFATable {
-            accepts: &self.data[accepts_at..edge_offsets_at],
+            accepts: &self.data[accepts_at..fallbacks_at],
+            fallbacks: &self.data[fallbacks_at..edge_offsets_at],
             edge_offsets: &self.data[edge_offsets_at..edges_at],
             edges: &self.data[edges_at..end],
         }
@@ -156,6 +167,17 @@ impl<'a> StaticDFATable<'a> {
     #[inline]
     pub fn accept(&self, state: usize) -> Option<i32> {
         let alt = self.accepts[state];
+        if alt > 0 {
+            Some(alt)
+        } else {
+            None
+        }
+    }
+
+    /// Error-avoidance fallback alternative of `state`, if any.
+    #[inline]
+    pub fn fallback(&self, state: usize) -> Option<i32> {
+        let alt = self.fallbacks[state];
         if alt > 0 {
             Some(alt)
         } else {

@@ -31,6 +31,7 @@ import java.util.Base64;
  *   numStates
  *   numEdgeInts
  *   accepts[numStates]              (predicted alt per state; 0 = non-accept)
+ *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
  * </pre>
@@ -44,11 +45,11 @@ import java.util.Base64;
  */
 public class StaticDFATables {
 	/** Must match the tool's SerializedStaticDFAs.FORMAT_VERSION. */
-	public static final int FORMAT_VERSION = 2;
+	public static final int FORMAT_VERSION = 3;
 
-	/** Concatenated per-table data: accepts, edgeOffsets, edges. */
+	/** Concatenated per-table data: accepts, fallbacks, edgeOffsets, edges. */
 	protected final int[] data;
-	/** Per-table (acceptsAt, edgeOffsetsAt, edgesAt, endAt) indexes into {@link #data}. */
+	/** Per-table (acceptsAt, fallbacksAt, edgeOffsetsAt, edgesAt, endAt) indexes into {@link #data}. */
 	protected final int[] metas;
 	/** decision number -> table index, or -1. */
 	protected final int[] decisionToTable;
@@ -82,7 +83,7 @@ public class StaticDFATables {
 
 		int[] decisionToTable = new int[numSlots];
 		java.util.Arrays.fill(decisionToTable, -1);
-		int[] metas = new int[numTables*4];
+		int[] metas = new int[numTables*5];
 
 		// first pass over structure requires data sizes; buffer grows as we read
 		IntBuffer data = new IntBuffer();
@@ -92,13 +93,15 @@ public class StaticDFATables {
 			int numEdgeInts = ints.next();
 			decisionToTable[decision] = table;
 
-			metas[table*4] = data.size;                       // acceptsAt
+			metas[table*5] = data.size;                       // acceptsAt
 			for (int i = 0; i < numStates; i++) data.add(ints.next());
-			metas[table*4+1] = data.size;                     // edgeOffsetsAt
+			metas[table*5+1] = data.size;                     // fallbacksAt
+			for (int i = 0; i < numStates; i++) data.add(ints.next());
+			metas[table*5+2] = data.size;                     // edgeOffsetsAt
 			for (int i = 0; i < numStates+1; i++) data.add(ints.next());
-			metas[table*4+2] = data.size;                     // edgesAt
+			metas[table*5+3] = data.size;                     // edgesAt
 			for (int i = 0; i < numEdgeInts; i++) data.add(ints.next());
-			metas[table*4+3] = data.size;                     // endAt
+			metas[table*5+4] = data.size;                     // endAt
 		}
 		if (!ints.atEnd()) {
 			throw new IllegalStateException("trailing bytes in static DFA blob");
@@ -108,15 +111,27 @@ public class StaticDFATables {
 
 	/** Predicted alternative if {@code state} of {@code decision}'s table accepts; else 0. */
 	public int accept(int decision, int state) {
-		int acceptsAt = metas[decisionToTable[decision]*4];
+		int acceptsAt = metas[decisionToTable[decision]*5];
 		return data[acceptsAt+state];
+	}
+
+	/**
+	 * Error-avoidance fallback alternative of {@code state}, or 0: the
+	 * minimum alternative that already finished the decision entry rule,
+	 * returned when no edge matches so the parser reports a more precise
+	 * error at the actual mismatch point (mirroring adaptivePredict's
+	 * getAltThatFinishedDecisionEntryRule recovery).
+	 */
+	public int fallback(int decision, int state) {
+		int fallbacksAt = metas[decisionToTable[decision]*5+1];
+		return data[fallbacksAt+state];
 	}
 
 	/** Successor of {@code state} on token {@code t}, or -1 (binary search). */
 	public int edge(int decision, int state, int t) {
 		int table = decisionToTable[decision];
-		int edgeOffsetsAt = metas[table*4+1];
-		int edgesAt = metas[table*4+2];
+		int edgeOffsetsAt = metas[table*5+2];
+		int edgesAt = metas[table*5+3];
 		int lo = data[edgeOffsetsAt+state]/3;
 		int hi = data[edgeOffsetsAt+state+1]/3 - 1;
 		while (lo <= hi) {

@@ -553,6 +553,13 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 			if ( alt>0 ) return alt;
 			int next = tables.edge(decision, s, _input.LA(i));
 			if ( next<0 ) {
+				// No viable transition. If some alternative already finished
+				// the decision entry rule, predict it and let the parser
+				// report a more precise error at the actual mismatch point -
+				// mirroring adaptivePredict's recovery via
+				// getAltThatFinishedDecisionEntryRule.
+				int fallback = tables.fallback(decision, s);
+				if ( fallback>0 ) return fallback;
 				throw new NoViableAltException(this, _input,
 											   _input.LT(1), _input.LT(i),
 											   null, _ctx);
