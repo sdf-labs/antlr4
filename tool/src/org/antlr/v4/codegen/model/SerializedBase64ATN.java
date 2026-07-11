@@ -41,12 +41,16 @@ public class SerializedBase64ATN extends SerializedATN {
 		for (int v : serialized) data.add(v);
 
 		Grammar g = factory.getGrammar();
-		if ( g.staticDecisionDFAs!=null && !g.staticDecisionDFAs.isEmpty()
-			 && g.atn==atn
+		boolean haveTables =
+			(g.staticDecisionDFAs!=null && !g.staticDecisionDFAs.isEmpty())
+			|| (g.staticPrecedenceDFAs!=null && !g.staticPrecedenceDFAs.isEmpty());
+		int n = 0;
+		if ( haveTables && g.atn==atn
 			 && factory.getGenerator().getTarget().supportsStaticDFA() ) {
-			SerializedStaticDFAs.appendIntStream(g.staticDecisionDFAs, data, tableComments);
+			n = SerializedStaticDFAs.appendIntStream(
+				g.staticDecisionDFAs, g.staticPrecedenceDFAs, data, tableComments);
 		}
-		numTables = tableComments.size();
+		numTables = n;
 
 		segments = CompactSerializer.encode(data.toArray());
 	}

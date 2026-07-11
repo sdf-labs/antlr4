@@ -33,10 +33,13 @@ public class Parser extends Recognizer {
 		super(factory);
 		this.file = file; // who contains us?
 		Grammar g = factory.getGrammar();
-		if ( g.staticDecisionDFAs!=null && !g.staticDecisionDFAs.isEmpty()
+		boolean haveTables =
+			(g.staticDecisionDFAs!=null && !g.staticDecisionDFAs.isEmpty())
+			|| (g.staticPrecedenceDFAs!=null && !g.staticPrecedenceDFAs.isEmpty());
+		if ( haveTables
 			 && factory.getGenerator().getTarget().supportsStaticDFA()
 			 && !factory.getGenerator().getTarget().isATNSerializedAsBase64VarInts() ) {
-			staticDFAs = new SerializedStaticDFAs(factory, g.staticDecisionDFAs);
+			staticDFAs = new SerializedStaticDFAs(factory, g.staticDecisionDFAs, g.staticPrecedenceDFAs);
 		}
 	}
 }

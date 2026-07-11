@@ -256,9 +256,9 @@ public class ParserFactory extends DefaultOutputModelFactory {
 	 * this target) for the given decision? See -Xstatic-dfa.
 	 */
 	protected boolean hasStaticDFA(int decision) {
-		return g.staticDecisionDFAs!=null
-			&& g.staticDecisionDFAs.containsKey(decision)
-			&& gen.getTarget().supportsStaticDFA();
+		if ( !gen.getTarget().supportsStaticDFA() ) return false;
+		return (g.staticDecisionDFAs!=null && g.staticDecisionDFAs.containsKey(decision))
+			|| (g.staticPrecedenceDFAs!=null && g.staticPrecedenceDFAs.containsKey(decision));
 	}
 
 	/** Like getComplexEBNFBlock but driving the decision from a static DFA table. */

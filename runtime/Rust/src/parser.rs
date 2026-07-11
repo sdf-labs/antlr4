@@ -480,7 +480,14 @@ where
     /// matching no table edge produces a `NoViableAlt` error anchored at the
     /// decision start token, matching `adaptive_predict`'s convention.
     pub fn dfa_predict(&mut self, decision: i32) -> Result<i32, ANTLRError> {
-        let dfa = self.atn_manager.atn().static_dfas.table(decision);
+        // the precedence selects the table of dispatched decisions (the
+        // operator loops of left-recursive rules); plain decisions ignore it
+        let precedence = self.get_precedence();
+        let dfa = self
+            .atn_manager
+            .atn()
+            .static_dfas
+            .table(decision, precedence);
         let mut s = 0usize;
         let mut i = 1isize;
         loop {

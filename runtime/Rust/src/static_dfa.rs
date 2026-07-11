@@ -21,18 +21,32 @@
 //! numTables
 //! numDecisionSlots                 (max decision number + 1)
 //! for each table:
-//!   decision
+//!   decision                       (-1: referenced only via a dispatch below)
 //!   numStates
 //!   numEdgeInts
 //!   accepts[numStates]             (predicted alt per state; 0 = non-accept)
 //!   fallbacks[numStates]           (error-avoidance alt per state; 0 = none)
 //!   edgeOffsets[numStates+1]       (index of each state's first edge i32)
 //!   edges[numEdgeInts]             ((lo, hi, target) triples, lo-sorted per state)
+//! numPrecedenceDispatches
+//! for each dispatch:               (a left-recursive precedence loop decision)
+//!   decision
+//!   numCutoffs
+//!   cutoffs[numCutoffs]            (sorted; class(p) = #cutoffs < p)
+//!   tableIndex[numCutoffs+1]       (table of each precedence class)
 //! ```
+//!
+//! Precedence dispatches serve the operator loops of left-recursive rules:
+//! the loop's viable-operator set depends on the current precedence (the
+//! `_p` argument of the rewritten rule), so one table per precedence
+//! equivalence class is precomputed and the walker selects by
+//! `get_precedence()` - the static analogue of the adaptive runtime's
+//! per-precedence DFA start states, and the reason the generated loop
+//! behaves like a hand-rolled precedence-climbing (Pratt) parser.
 
 /// Format version understood by this runtime; must match the tool's
 /// `SerializedStaticDFAs.FORMAT_VERSION`.
-pub const FORMAT_VERSION: i32 = 3;
+pub const FORMAT_VERSION: i32 = 4;
 
 /// The deserialized static prediction tables of one generated parser.
 ///
@@ -51,8 +65,14 @@ pub struct StaticDFATables {
     data: Vec<i32>,
     /// Per-table (accepts_at, fallbacks_at, edge_offsets_at, edges_at) indexes into `data`.
     metas: Vec<(usize, usize, usize, usize)>,
-    /// decision number -> table index, or -1.
+    /// decision number -> table index (`>= 0`), `-1` (no table), or
+    /// `-(dispatch index) - 2` (precedence-dispatched decision).
     decision_to_table: Vec<i32>,
+    /// Flattened dispatch entries: `numCutoffs, cutoffs..., tableIndex...`
+    /// (`numCutoffs + 1` table indices).
+    dispatch_data: Vec<i32>,
+    /// Per-dispatch start offset into `dispatch_data`.
+    dispatch_at: Vec<usize>,
 }
 
 /// Borrowed view of one decision's table.
@@ -80,6 +100,8 @@ impl StaticDFATables {
             data: Vec::new(),
             metas: Vec::new(),
             decision_to_table: Vec::new(),
+            dispatch_data: Vec::new(),
+            dispatch_at: Vec::new(),
         }
     }
 
@@ -108,10 +130,12 @@ impl StaticDFATables {
         let mut decision_to_table = vec![-1i32; num_slots];
 
         for table in 0..num_tables {
-            let decision = next() as usize;
+            let decision = next();
             let num_states = next() as usize;
             let num_edge_ints = next() as usize;
-            decision_to_table[decision] = table as i32;
+            if decision >= 0 {
+                decision_to_table[decision as usize] = table as i32;
+            }
 
             let accepts_at = data.len();
             for _ in 0..num_states {
@@ -131,6 +155,20 @@ impl StaticDFATables {
             }
             metas.push((accepts_at, fallbacks_at, edge_offsets_at, edges_at));
         }
+
+        let num_dispatches = next() as usize;
+        let mut dispatch_data = Vec::new();
+        let mut dispatch_at = Vec::with_capacity(num_dispatches);
+        for dispatch in 0..num_dispatches {
+            let decision = next() as usize;
+            decision_to_table[decision] = -(dispatch as i32) - 2;
+            dispatch_at.push(dispatch_data.len());
+            let num_cutoffs = next() as usize;
+            dispatch_data.push(num_cutoffs as i32);
+            for _ in 0..2 * num_cutoffs + 1 {
+                dispatch_data.push(next());
+            }
+        }
         drop(next);
         assert!(ints.next().is_none(), "trailing data in static DFA blob");
 
@@ -138,14 +176,27 @@ impl StaticDFATables {
             data,
             metas,
             decision_to_table,
+            dispatch_data,
+            dispatch_at,
         }
     }
 
-    /// The table for a decision; panics if the decision has no static table
-    /// (generated code only references decisions it has tables for).
+    /// The table for a decision; `precedence` (the parser's current
+    /// precedence, i.e. the top of its precedence stack) selects the
+    /// precedence class of dispatched decisions and is ignored for plain
+    /// ones. Panics if the decision has no static table (generated code
+    /// only references decisions it has tables for).
     #[inline]
-    pub fn table(&self, decision: i32) -> StaticDFATable<'_> {
-        let t = self.decision_to_table[decision as usize];
+    pub fn table(&self, decision: i32, precedence: i32) -> StaticDFATable<'_> {
+        let mut t = self.decision_to_table[decision as usize];
+        if t <= -2 {
+            // precedence dispatch: class(p) = #cutoffs < p
+            let at = self.dispatch_at[(-t - 2) as usize];
+            let num_cutoffs = self.dispatch_data[at] as usize;
+            let cutoffs = &self.dispatch_data[at + 1..at + 1 + num_cutoffs];
+            let class = cutoffs.iter().take_while(|&&c| c < precedence).count();
+            t = self.dispatch_data[at + 1 + num_cutoffs + class];
+        }
         assert!(t >= 0, "no static DFA table for decision {}", decision);
         let (accepts_at, fallbacks_at, edge_offsets_at, edges_at) = self.metas[t as usize];
         let end = self

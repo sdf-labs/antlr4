@@ -196,6 +196,14 @@ public class Grammar implements AttributeResolver {
 	 */
 	public Map<Integer, org.antlr.v4.analysis.StaticDFA> staticDecisionDFAs;
 
+	/**
+	 * Per-precedence static prediction table groups of left-recursive
+	 * precedence loop decisions (see
+	 * {@link org.antlr.v4.analysis.PrecedenceStaticDFA}), keyed by decision
+	 * number; populated only with -Xstatic-dfa.
+	 */
+	public Map<Integer, org.antlr.v4.analysis.PrecedenceStaticDFA> staticPrecedenceDFAs;
+
 	public final Tool tool;
 
 	/** Token names and literal tokens like "void" are uniquely indexed.
