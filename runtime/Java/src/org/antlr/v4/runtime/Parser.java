@@ -546,19 +546,22 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 	public int dfaPredict(StaticDFATables tables, int decision)
 		throws RecognitionException
 	{
+		// the precedence selects the table of dispatched decisions (the
+		// operator loops of left-recursive rules); plain decisions ignore it
+		int table = tables.tableFor(decision, getPrecedence());
 		int s = 0;
 		int i = 1;
 		while (true) {
-			int alt = tables.accept(decision, s);
+			int alt = tables.accept(table, s);
 			if ( alt>0 ) return alt;
-			int next = tables.edge(decision, s, _input.LA(i));
+			int next = tables.edge(table, s, _input.LA(i));
 			if ( next<0 ) {
 				// No viable transition. If some alternative already finished
 				// the decision entry rule, predict it and let the parser
 				// report a more precise error at the actual mismatch point -
 				// mirroring adaptivePredict's recovery via
 				// getAltThatFinishedDecisionEntryRule.
-				int fallback = tables.fallback(decision, s);
+				int fallback = tables.fallback(table, s);
 				if ( fallback>0 ) return fallback;
 				throw new NoViableAltException(this, _input,
 											   _input.LT(1), _input.LT(i),

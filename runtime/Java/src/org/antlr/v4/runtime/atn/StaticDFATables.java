@@ -27,13 +27,19 @@ import java.util.Base64;
  * numTables
  * numDecisionSlots                  (max decision number + 1)
  * for each table:
- *   decision
+ *   decision                        (-1: referenced only via a dispatch below)
  *   numStates
  *   numEdgeInts
  *   accepts[numStates]              (predicted alt per state; 0 = non-accept)
  *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
+ * numPrecedenceDispatches
+ * for each dispatch:                (a left-recursive precedence loop decision)
+ *   decision
+ *   numCutoffs
+ *   cutoffs[numCutoffs]             (sorted; class(p) = #cutoffs &lt; p)
+ *   tableIndex[numCutoffs+1]        (table of each precedence class)
  * </pre>
  *
  * <p>State 0 of each table is its start state; {@code accepts[s] > 0} marks
@@ -42,22 +48,37 @@ import java.util.Base64;
  * edge means no viable alternative. Cyclic tables (LL(*) decisions) are
  * walked by the same loop; termination is guaranteed because every step
  * consumes one token of lookahead and the input is finite.</p>
+ *
+ * <p>Precedence dispatches serve the operator loops of left-recursive
+ * rules: the loop's viable-operator set depends on the current precedence
+ * (the {@code _p} argument of the rewritten rule), so the tool precomputes
+ * one table per precedence equivalence class and the walker selects by
+ * {@code getPrecedence()} - the static analogue of the adaptive runtime's
+ * per-precedence DFA start states.</p>
  */
 public class StaticDFATables {
 	/** Must match the tool's SerializedStaticDFAs.FORMAT_VERSION. */
-	public static final int FORMAT_VERSION = 3;
+	public static final int FORMAT_VERSION = 4;
 
 	/** Concatenated per-table data: accepts, fallbacks, edgeOffsets, edges. */
 	protected final int[] data;
 	/** Per-table (acceptsAt, fallbacksAt, edgeOffsetsAt, edgesAt, endAt) indexes into {@link #data}. */
 	protected final int[] metas;
-	/** decision number -> table index, or -1. */
+	/**
+	 * decision number -> table index ({@code >= 0}), -1 (no table), or
+	 * {@code -(dispatch offset) - 2}: an offset into {@link #dispatchData},
+	 * where a dispatch entry reads {@code numCutoffs, cutoffs...,
+	 * tableIndex...} ({@code numCutoffs+1} table indices).
+	 */
 	protected final int[] decisionToTable;
+	/** Flattened precedence dispatch entries. */
+	protected final int[] dispatchData;
 
-	protected StaticDFATables(int[] data, int[] metas, int[] decisionToTable) {
+	protected StaticDFATables(int[] data, int[] metas, int[] decisionToTable, int[] dispatchData) {
 		this.data = data;
 		this.metas = metas;
 		this.decisionToTable = decisionToTable;
+		this.dispatchData = dispatchData;
 	}
 
 	/**
@@ -91,7 +112,7 @@ public class StaticDFATables {
 			int decision = ints.next();
 			int numStates = ints.next();
 			int numEdgeInts = ints.next();
-			decisionToTable[decision] = table;
+			if (decision >= 0) decisionToTable[decision] = table;
 
 			metas[table*5] = data.size;                       // acceptsAt
 			for (int i = 0; i < numStates; i++) data.add(ints.next());
@@ -103,15 +124,43 @@ public class StaticDFATables {
 			for (int i = 0; i < numEdgeInts; i++) data.add(ints.next());
 			metas[table*5+4] = data.size;                     // endAt
 		}
+		int numDispatches = ints.next();
+		IntBuffer dispatchData = new IntBuffer();
+		for (int dispatch = 0; dispatch < numDispatches; dispatch++) {
+			int decision = ints.next();
+			decisionToTable[decision] = -dispatchData.size - 2;
+			int numCutoffs = ints.next();
+			dispatchData.add(numCutoffs);
+			for (int i = 0; i < 2*numCutoffs + 1; i++) dispatchData.add(ints.next());
+		}
 		if (!ints.atEnd()) {
 			throw new IllegalStateException("trailing bytes in static DFA blob");
 		}
-		return new StaticDFATables(data.toArray(), metas, decisionToTable);
+		return new StaticDFATables(data.toArray(), metas, decisionToTable, dispatchData.toArray());
 	}
 
-	/** Predicted alternative if {@code state} of {@code decision}'s table accepts; else 0. */
-	public int accept(int decision, int state) {
-		int acceptsAt = metas[decisionToTable[decision]*5];
+	/**
+	 * The table serving {@code decision}: {@code precedence} (the parser's
+	 * current precedence, i.e. the top of its precedence stack) selects the
+	 * precedence class of dispatched decisions - the operator loops of
+	 * left-recursive rules - and is ignored for plain ones.
+	 */
+	public int tableFor(int decision, int precedence) {
+		int table = decisionToTable[decision];
+		if (table <= -2) {
+			// precedence dispatch: class(p) = #cutoffs < p
+			int at = -table - 2;
+			int numCutoffs = dispatchData[at];
+			int cls = 0;
+			while (cls < numCutoffs && dispatchData[at+1+cls] < precedence) cls++;
+			table = dispatchData[at+1+numCutoffs+cls];
+		}
+		return table;
+	}
+
+	/** Predicted alternative if {@code state} of {@code table} accepts; else 0. */
+	public int accept(int table, int state) {
+		int acceptsAt = metas[table*5];
 		return data[acceptsAt+state];
 	}
 
@@ -122,14 +171,13 @@ public class StaticDFATables {
 	 * error at the actual mismatch point (mirroring adaptivePredict's
 	 * getAltThatFinishedDecisionEntryRule recovery).
 	 */
-	public int fallback(int decision, int state) {
-		int fallbacksAt = metas[decisionToTable[decision]*5+1];
+	public int fallback(int table, int state) {
+		int fallbacksAt = metas[table*5+1];
 		return data[fallbacksAt+state];
 	}
 
 	/** Successor of {@code state} on token {@code t}, or -1 (binary search). */
-	public int edge(int decision, int state, int t) {
-		int table = decisionToTable[decision];
+	public int edge(int table, int state, int t) {
 		int edgeOffsetsAt = metas[table*5+2];
 		int edgesAt = metas[table*5+3];
 		int lo = data[edgeOffsetsAt+state]/3;

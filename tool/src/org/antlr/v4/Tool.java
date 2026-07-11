@@ -417,7 +417,7 @@ public class Tool {
 
 		// PRECOMPUTE STATIC SLL PREDICTION TABLES FOR SAFE NON-LL(1) DECISIONS
 		if ( static_dfa && !force_atn && !g.isLexer() && g.atn!=null ) {
-			g.staticDecisionDFAs = DecisionClassifier.buildTables(g);
+			DecisionClassifier.buildTables(g);
 		}
 
 		// GENERATE CODE

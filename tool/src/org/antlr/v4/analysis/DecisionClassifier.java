@@ -135,6 +135,14 @@ public class DecisionClassifier {
 		 * LLSTAR, or trusted EXACT_AMBIG).
 		 */
 		public StaticDFA dfa;
+		/**
+		 * For {@link Category#LR_PRECEDENCE} decisions: the per-precedence
+		 * table group, populated only when every precedence class is
+		 * statically decidable (see {@link PrecedenceStaticDFA}).
+		 */
+		public PrecedenceStaticDFA precDfa;
+		/** For LR_PRECEDENCE decisions: report detail (per-class outcomes). */
+		public String precNote;
 
 		public Result(DecisionState decisionState) {
 			this.decisionState = decisionState;
@@ -241,6 +249,33 @@ public class DecisionClassifier {
 	/** Per-attempt memo for {@link #contextDepth} (contexts share structure). */
 	protected Map<PredictionContext, Integer> depthCache;
 
+	// -- precedence-decision construction mode (see classifyPrecedence) --
+
+	/**
+	 * When true, the start-state closure in progress belongs to a precedence
+	 * loop decision: frame-0 precedence predicates are <em>evaluated</em>
+	 * against {@link #precEvalValue} (mirroring the runtime, which collects
+	 * and evaluates precedence predicates only while computing a precedence
+	 * DFA start state), and precedence-filter suppression marks are placed
+	 * (mirroring {@code outermostPrecedenceReturn} detection in
+	 * ParserATNSimulator#closure_).
+	 */
+	protected boolean precStartClosure;
+	/** Representative precedence of the class under construction. */
+	protected int precEvalValue;
+	/** Rule index of the precedence decision under construction; -1 = none. */
+	protected int precRuleIndex = -1;
+	/** During precedence-mode construction: exact conflicts are not trusted. */
+	protected boolean trustExactAmbig = true;
+	/**
+	 * Lazily built: state number of a rule call's follow state - the state
+	 * grammar-wide FOLLOW links from the callee's stop state point back to -
+	 * mapped to that call's RuleTransition. Used to re-derive, on the
+	 * tool-side ATN, what ATNDeserializer#markPrecedenceDecisions encodes as
+	 * EpsilonTransition#outermostPrecedenceReturn in deserialized ATNs.
+	 */
+	protected Map<Integer, RuleTransition> callByFollowState;
+
 	public DecisionClassifier(Grammar g) {
 		this.g = g;
 		this.atn = g.atn;
@@ -263,8 +298,7 @@ public class DecisionClassifier {
 			return res;
 		}
 		if (isPrecedenceLoopDecision(s)) {
-			res.category = Category.LR_PRECEDENCE;
-			return res;
+			return classifyPrecedence(s);
 		}
 		if (g.decisionLOOK != null && s.decision < g.decisionLOOK.size()
 			&& AnalysisPipeline.disjoint(g.decisionLOOK.get(s.decision))) {
@@ -302,6 +336,191 @@ public class DecisionClassifier {
 	}
 
 	// ---------------------------------------------------------------------
+	// Precedence loop decisions (left-recursive rules)
+	// ---------------------------------------------------------------------
+
+	/**
+	 * Classify the precedence loop decision of a left-recursive rule and, if
+	 * possible, build its per-precedence static prediction tables.
+	 *
+	 * <p>The runtime predicts this decision with a <em>precedence DFA</em>:
+	 * a separate lazily-built DFA start state per value of
+	 * {@code parser.getPrecedence()} (see {@code DFA.isPrecedenceDfa} and
+	 * {@code ParserATNSimulator.applyPrecedenceFilter}). The precedence only
+	 * influences prediction through the {@code precpred(_ctx, n)} guards of
+	 * the operator alternatives, all evaluated during start-state
+	 * computation, so precedence values with identical guard outcomes are
+	 * behaviorally indistinguishable: the guard constants {@code n1<...<nk}
+	 * partition all precedence values into at most {@code k+1} classes.
+	 * This method replays the runtime's start-state computation once per
+	 * class (evaluating frame-0 precedence predicates against a class
+	 * representative and applying the precedence filter) and runs the
+	 * ordinary exhaustive DFA construction from there.</p>
+	 *
+	 * <p>Tables are emitted only if <em>every</em> class is statically
+	 * decidable (the runtime dispatch must be total). Exact ambiguities are
+	 * not trusted inside precedence classes: the min-alt substitution
+	 * argument has not been re-established under precedence filtering, so
+	 * such classes conservatively demote the whole decision.</p>
+	 */
+	protected Result classifyPrecedence(DecisionState s) {
+		Result res = new Result(s);
+		res.category = Category.LR_PRECEDENCE;
+
+		// distinct guard constants of this rule's operator alternatives
+		TreeSet<Integer> cutSet = new TreeSet<Integer>();
+		for (ATNState st : atn.states) {
+			if (st == null || st.ruleIndex != s.ruleIndex) continue;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof PrecedencePredicateTransition) {
+					cutSet.add(((PrecedencePredicateTransition)t).precedence);
+				}
+			}
+		}
+		if (cutSet.isEmpty()) return res; // not the expected LR shape; stay adaptive
+
+		int[] cutoffs = new int[cutSet.size()];
+		int[] reps = new int[cutSet.size()+1];
+		int ci = 0;
+		reps[0] = 0;
+		for (int cut : cutSet) {
+			cutoffs[ci] = cut;
+			reps[ci+1] = cut+1; // first precedence above this cutoff
+			ci++;
+		}
+
+		if (callByFollowState == null) {
+			callByFollowState = new HashMap<Integer, RuleTransition>();
+			for (ATNState st : atn.states) {
+				if (st == null) continue;
+				for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+					Transition t = st.transition(i);
+					if (t instanceof RuleTransition) {
+						RuleTransition rt = (RuleTransition)t;
+						callByFollowState.put(rt.followState.stateNumber, rt);
+					}
+				}
+			}
+		}
+
+		StaticDFA[] tables = new StaticDFA[reps.length];
+		StringBuilder note = new StringBuilder();
+		boolean allStatic = true;
+		int maxK = 0;
+		int totalStates = 0;
+		this.precRuleIndex = s.ruleIndex;
+		this.trustExactAmbig = false;
+		try {
+			for (int c = 0; c < reps.length; c++) {
+				this.precEvalValue = reps[c];
+				Result attempt = null;
+				for (int depthBound : wideningDepths) {
+					Result a = new Result(s);
+					a.wideningDepth = depthBound;
+					if (!buildDFA(s, a, depthBound)) { attempt = a; break; }
+					attempt = a; // overflow at this bound; try tighter widening
+				}
+				res.sawPrecPredicate |= attempt.sawPrecPredicate;
+				res.usedWidening |= attempt.usedWidening;
+				if (note.length() > 0) note.append(' ');
+				note.append("p").append(c == 0 ? "<=" + cutoffs[0]
+					: c < cutoffs.length ? "=" + (cutoffs[c-1]+1) + ".." + cutoffs[c]
+					: ">" + cutoffs[cutoffs.length-1]).append(':');
+				if (attempt.dfa == null) {
+					allStatic = false;
+					note.append(attempt.category);
+					if (!attempt.contextSensitiveConflicts.isEmpty()) {
+						note.append("/ctx").append(distinct(attempt.contextSensitiveConflicts));
+					}
+					if (!attempt.approxConflicts.isEmpty()) {
+						note.append("/approx").append(distinct(attempt.approxConflicts));
+					}
+					if (!attempt.exactAmbigConflicts.isEmpty()) {
+						note.append("/exact").append(distinct(attempt.exactAmbigConflicts));
+					}
+					if (abortOnUntrustedConflict) break;
+				}
+				else {
+					tables[c] = attempt.dfa;
+					maxK = Math.max(maxK, attempt.k);
+					totalStates += attempt.numDfaStates;
+					note.append(attempt.dfa.cyclic ? "LL(*)" : "k=" + attempt.k);
+				}
+			}
+		}
+		finally {
+			this.precRuleIndex = -1;
+			this.trustExactAmbig = true;
+			this.precStartClosure = false;
+		}
+
+		res.precNote = "classes=" + reps.length + " [" + note + "]";
+		if (allStatic) {
+			res.precDfa = new PrecedenceStaticDFA(s.decision, cutoffs, tables);
+			res.k = maxK;
+			res.numDfaStates = totalStates;
+		}
+		return res;
+	}
+
+	/**
+	 * Tool-side port of ParserATNSimulator#applyPrecedenceFilter, applied to
+	 * the merged start configuration set of a precedence class before it
+	 * becomes DFA state 0. Pass 1 (evaluating the operator guards on the
+	 * loop-entry alternative) already happened eagerly during closure - see
+	 * the PrecedencePredicateTransition case - so only pass 2 remains:
+	 * eliminate loop-exit configurations shadowed by a loop-entry
+	 * configuration at the same ATN state with an equal context (the
+	 * "let the current invocation take the operator" resolution that makes
+	 * precedence loops unambiguous), keeping configurations whose
+	 * suppression mark identifies them as re-entries through 0-precedence
+	 * call sites (a real outer invocation may legitimately take the
+	 * operator, cf. {@code e '[' e ']'}).
+	 *
+	 * <p>Because the suppression mark lives above the taint bits in
+	 * {@link ATNConfig#reachesIntoOuterContext} and merging takes the max,
+	 * a merge with a suppressed configuration can swallow taint bits; they
+	 * are conservatively restored from the pre-merge configurations, keyed
+	 * by (state, alt). Suppression marks are cleared from the survivors so
+	 * they cannot perturb DFA state identity downstream.</p>
+	 */
+	protected Set<ATNConfig> applyPrecedenceFilter(Set<ATNConfig> raw) {
+		// conservative taint restore: OR of pre-merge taints per (state, alt)
+		Map<Long, Integer> taintByStateAlt = new HashMap<Long, Integer>();
+		for (ATNConfig c : raw) {
+			long key = ((long)c.state.stateNumber << 32) | c.alt;
+			Integer prev = taintByStateAlt.get(key);
+			int taint = c.reachesIntoOuterContext & (BOUNDARY_TAINT|PRECPRED_TAINT|WIDENED_TAINT);
+			taintByStateAlt.put(key, prev == null ? taint : (prev|taint));
+		}
+
+		Set<ATNConfig> merged = canonical(raw);
+
+		Map<Integer, PredictionContext> statesFromAlt1 = new HashMap<Integer, PredictionContext>();
+		for (ATNConfig c : merged) {
+			if (c.alt == 1) statesFromAlt1.put(c.state.stateNumber, c.context);
+		}
+
+		Set<ATNConfig> result = new LinkedHashSet<ATNConfig>();
+		for (ATNConfig c : merged) {
+			if (c.alt != 1 && !c.isPrecedenceFilterSuppressed()) {
+				PredictionContext ctx1 = statesFromAlt1.get(c.state.stateNumber);
+				if (ctx1 != null && ctx1.equals(c.context)) {
+					continue; // eliminated: shadowed by the loop-entry alternative
+				}
+			}
+			ATNConfig kept = new ATNConfig(c);
+			kept.setPrecedenceFilterSuppressed(false);
+			long key = ((long)c.state.stateNumber << 32) | c.alt;
+			Integer taint = taintByStateAlt.get(key);
+			if (taint != null) kept.reachesIntoOuterContext |= taint;
+			result.add(kept);
+		}
+		return result;
+	}
+
+	// ---------------------------------------------------------------------
 	// Static SLL DFA construction
 	// ---------------------------------------------------------------------
 
@@ -318,9 +537,14 @@ public class DecisionClassifier {
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
 		Set<ATNConfig> startBusy = new HashSet<ATNConfig>();
+		this.precStartClosure = precRuleIndex >= 0;
 		for (int i = 0; i < s.getNumberOfTransitions(); i++) {
 			closure(new ATNConfig(s.transition(i).target, i+1, EmptyPredictionContext.Instance),
-					start, startBusy, res);
+					start, startBusy, res, 0);
+		}
+		this.precStartClosure = false;
+		if (precRuleIndex >= 0) {
+			start = applyPrecedenceFilter(start);
 		}
 		start = canonical(start);
 		stateIds.put(start, 0);
@@ -368,7 +592,11 @@ public class DecisionClassifier {
 				// identically. Mixed usage (dangling-else shape) means
 				// full-context prediction may kill the boundary-only
 				// alternative, so min-alt is not behavior-preserving.
-				boolean untrusted = hardTainted || (anyBoundary && !allBoundary);
+				// Inside precedence classes exact conflicts are never
+				// trusted: the substitution argument has not been
+				// re-established under precedence filtering.
+				boolean untrusted = hardTainted || (anyBoundary && !allBoundary)
+					|| !trustExactAmbig;
 				BitSet conflicting = PredictionMode.getAlts(altSubsets);
 				if (untrusted) res.approxConflicts.add(conflicting);
 				else if (exact) res.exactAmbigConflicts.add(conflicting);
@@ -583,7 +811,7 @@ public class DecisionClassifier {
 					succ.add(c);
 				}
 				else {
-					closure(new ATNConfig(c, moveTargets.get(m)), succ, busy, res);
+					closure(new ATNConfig(c, moveTargets.get(m)), succ, busy, res, 0);
 				}
 			}
 			succ = canonical(succ);
@@ -608,8 +836,19 @@ public class DecisionClassifier {
 	 * are traversed (and recorded), rule invocations push a singleton context
 	 * (widened on recursion), rule stops pop or - with a wildcard context -
 	 * chase the grammar-wide FOLLOW links the tool attaches to rule stop states.
+	 *
+	 * <p>{@code depth} is the runtime's frame-balance counter: +1 per rule
+	 * invocation while non-negative (latched once the closure leaves the
+	 * decision's frame), -1 per return. It exists to identify frame-0
+	 * precedence predicates ({@code depth == 0}), which the runtime
+	 * evaluates while computing a precedence DFA start state and which are
+	 * evaluated here under the same conditions ({@link #precStartClosure}).
+	 * Boundary FOLLOW chases force the depth negative: under widening a
+	 * return can pop through the boundary from a nominally balanced depth,
+	 * and a predicate reached that way belongs to a phantom frame, never to
+	 * frame 0.</p>
 	 */
-	protected void closure(ATNConfig config, Set<ATNConfig> configs, Set<ATNConfig> busy, Result res) {
+	protected void closure(ATNConfig config, Set<ATNConfig> configs, Set<ATNConfig> busy, Result res, int depth) {
 		if (!busy.add(config)) return;
 		ATNState p = config.state;
 
@@ -618,11 +857,11 @@ public class DecisionClassifier {
 			if (ctx != null && !ctx.isEmpty()) {
 				for (int i = 0; i < ctx.size(); i++) {
 					if (ctx.getReturnState(i) == PredictionContext.EMPTY_RETURN_STATE) {
-						closure(new ATNConfig(config, p, EmptyPredictionContext.Instance), configs, busy, res);
+						closure(new ATNConfig(config, p, EmptyPredictionContext.Instance), configs, busy, res, depth);
 					}
 					else {
 						ATNState returnState = atn.states.get(ctx.getReturnState(i));
-						closure(new ATNConfig(config, returnState, ctx.getParent(i)), configs, busy, res);
+						closure(new ATNConfig(config, returnState, ctx.getParent(i)), configs, busy, res, depth-1);
 					}
 				}
 				return;
@@ -639,6 +878,10 @@ public class DecisionClassifier {
 		if (!p.onlyHasEpsilonTransitions()) {
 			configs.add(config);
 		}
+
+		// p being a rule stop here means the context was empty: the epsilon
+		// transitions below are the grammar-wide FOLLOW links
+		boolean boundaryChase = p instanceof RuleStopState;
 
 		for (int i = 0; i < p.getNumberOfTransitions(); i++) {
 			Transition t = p.transition(i);
@@ -669,21 +912,56 @@ public class DecisionClassifier {
 					res.usedWidening = true;
 					callee.reachesIntoOuterContext |= WIDENED_TAINT;
 				}
-				closure(callee, configs, busy, res);
+				closure(callee, configs, busy, res, depth >= 0 ? depth+1 : depth);
 			}
 			else if (t instanceof PrecedencePredicateTransition) {
-				// traversed as epsilon = assumed true: over-approximation
-				res.sawPrecPredicate = true;
-				ATNConfig c2 = new ATNConfig(config, t.target);
-				c2.reachesIntoOuterContext |= PRECPRED_TAINT;
-				closure(c2, configs, busy, res);
+				if (precStartClosure && depth == 0) {
+					// Frame-0 guard of the precedence decision under
+					// construction: evaluate precpred(n) = n >= p against
+					// the class representative, exactly like the runtime's
+					// precedence DFA start-state computation (pass 1 of
+					// applyPrecedenceFilter). Failing configs are
+					// eliminated; passing ones continue untainted.
+					if (((PrecedencePredicateTransition)t).precedence >= precEvalValue) {
+						closure(new ATNConfig(config, t.target), configs, busy, res, depth);
+					}
+				}
+				else {
+					// traversed as epsilon = assumed true, matching the
+					// runtime, which only evaluates precedence predicates
+					// in frame 0 of a precedence DFA start state
+					res.sawPrecPredicate = true;
+					ATNConfig c2 = new ATNConfig(config, t.target);
+					c2.reachesIntoOuterContext |= PRECPRED_TAINT;
+					closure(c2, configs, busy, res, depth);
+				}
 			}
 			else if (t instanceof PredicateTransition) {
 				res.sawPredicate = true;
-				closure(new ATNConfig(config, t.target), configs, busy, res);
+				closure(new ATNConfig(config, t.target), configs, busy, res, depth);
 			}
 			else if (t.isEpsilon()) {
-				closure(new ATNConfig(config, t.target), configs, busy, res);
+				ATNConfig c2 = new ATNConfig(config, t.target);
+				int newDepth = depth;
+				if (boundaryChase) {
+					// definitively outside frame 0 (see method doc)
+					newDepth = Math.min(depth-1, -1);
+					if (precStartClosure && p.ruleIndex == precRuleIndex) {
+						// Re-derive outermostPrecedenceReturn: this FOLLOW
+						// link returns from the decision's own rule to a
+						// call site that invoked it with precedence 0, so a
+						// real outer invocation may legitimately take an
+						// operator here - the precedence filter must not
+						// eliminate this path (ATNDeserializer marks such
+						// links for ParserATNSimulator#closure_).
+						RuleTransition call = callByFollowState.get(t.target.stateNumber);
+						if (call != null && call.precedence == 0
+							&& call.target.ruleIndex == precRuleIndex) {
+							c2.setPrecedenceFilterSuppressed(true);
+						}
+					}
+				}
+				closure(c2, configs, busy, res, newDepth);
 			}
 		}
 	}
@@ -788,14 +1066,19 @@ public class DecisionClassifier {
 	/**
 	 * Build serialized prediction tables for every decision that is
 	 * statically decidable with behavior preservation and not already served
-	 * by the LL(1) fast path. Everything else (the "unsafe residue":
-	 * context-sensitive/overflow/predicated/non-greedy/LR-precedence
-	 * decisions) is left to {@code adaptivePredict}.
+	 * by the LL(1) fast path, storing them on the grammar
+	 * ({@link Grammar#staticDecisionDFAs} for plain decisions,
+	 * {@link Grammar#staticPrecedenceDFAs} for the per-precedence table
+	 * groups of left-recursive loop decisions). Everything else (the
+	 * "unsafe residue": context-sensitive/overflow/predicated/non-greedy
+	 * decisions and precedence decisions with any non-static class) is left
+	 * to {@code adaptivePredict}.
 	 */
-	public static Map<Integer, StaticDFA> buildTables(Grammar g) {
+	public static void buildTables(Grammar g) {
 		DecisionClassifier classifier = new DecisionClassifier(g);
 		classifier.abortOnUntrustedConflict = true;
 		Map<Integer, StaticDFA> tables = new LinkedHashMap<Integer, StaticDFA>();
+		Map<Integer, PrecedenceStaticDFA> precTables = new LinkedHashMap<Integer, PrecedenceStaticDFA>();
 		for (DecisionState s : g.atn.decisionToState) {
 			// the LL(1) fast path already covers disjoint decisions
 			if (g.decisionLOOK != null && s.decision < g.decisionLOOK.size()
@@ -806,8 +1089,12 @@ public class DecisionClassifier {
 			if (r.dfa != null) {
 				tables.put(s.decision, r.dfa);
 			}
+			else if (r.precDfa != null) {
+				precTables.put(s.decision, r.precDfa);
+			}
 		}
-		return tables;
+		g.staticDecisionDFAs = tables;
+		g.staticPrecedenceDFAs = precTables;
 	}
 
 	// ---------------------------------------------------------------------
@@ -823,12 +1110,22 @@ public class DecisionClassifier {
 		for (Category c : Category.values()) counts.put(c, 0);
 		for (Result r : results) counts.put(r.category, counts.get(r.category)+1);
 
+		int precStatic = 0;
+		for (Result r : results) {
+			if (r.precDfa != null) precStatic++;
+		}
+
 		StringBuilder buf = new StringBuilder();
 		buf.append("=== decision report: grammar ").append(g.name)
 		   .append(" (").append(results.size()).append(" decisions) ===\n");
 		buf.append("summary:");
 		for (Map.Entry<Category, Integer> e : counts.entrySet()) {
-			if (e.getValue() > 0) buf.append(' ').append(e.getKey()).append('=').append(e.getValue());
+			if (e.getValue() > 0) {
+				buf.append(' ').append(e.getKey()).append('=').append(e.getValue());
+				if (e.getKey() == Category.LR_PRECEDENCE && precStatic > 0) {
+					buf.append('(').append(precStatic).append(" static)");
+				}
+			}
 		}
 		buf.append('\n');
 
@@ -836,7 +1133,17 @@ public class DecisionClassifier {
 		int maxKLLK = 0;
 		Map<Integer, Integer> llkHistogram = new java.util.TreeMap<Integer, Integer>();
 		for (Result r : results) {
-			if (r.category == Category.LL1 || r.category == Category.LR_PRECEDENCE) continue;
+			if (r.category == Category.LL1) continue;
+			if (r.category == Category.LR_PRECEDENCE) {
+				if (r.precNote != null) {
+					Rule lrRule = g.getRule(r.decisionState.ruleIndex);
+					buf.append(String.format("%-22s d=%-4d %-17s", lrRule.name,
+						r.decisionState.decision, r.category));
+					buf.append(' ').append(r.precNote)
+					   .append(r.precDfa != null ? " [static]" : " [adaptive]").append('\n');
+				}
+				continue;
+			}
 			if (r.k > maxKAnyAcyclic) maxKAnyAcyclic = r.k;
 			if (r.category == Category.LLK) {
 				maxKLLK = Math.max(maxKLLK, r.k);

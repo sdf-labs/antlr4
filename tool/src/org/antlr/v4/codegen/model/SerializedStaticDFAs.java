@@ -6,20 +6,23 @@
 
 package org.antlr.v4.codegen.model;
 
+import org.antlr.v4.analysis.PrecedenceStaticDFA;
 import org.antlr.v4.analysis.StaticDFA;
 import org.antlr.v4.codegen.CompactSerializer;
 import org.antlr.v4.codegen.OutputModelFactory;
 import org.antlr.v4.runtime.misc.IntegerList;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 /**
  * All statically-precomputed SLL prediction tables of a parser
- * (see {@link StaticDFA}), packed into one compact serialized blob -
- * in the same vein as {@code _serializedATN} - and lazily deserialized by
- * the target runtime's {@code StaticDFATables} at first use.
+ * (see {@link StaticDFA} and {@link PrecedenceStaticDFA}), packed into one
+ * compact serialized blob - in the same vein as {@code _serializedATN} - and
+ * lazily deserialized by the target runtime's {@code StaticDFATables} at
+ * first use.
  *
  * <p>The logical int stream below is encoded with
  * {@link CompactSerializer} (zigzag LEB128 varints, base64, 80-column line
@@ -30,17 +33,26 @@ import java.util.Map;
  * numTables
  * numDecisionSlots                  (max decision number + 1)
  * for each table:
- *   decision
+ *   decision                        (-1: referenced only via a dispatch below)
  *   numStates
  *   numEdgeInts
  *   accepts[numStates]              (predicted alt per state; 0 = non-accept)
  *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
+ * numPrecedenceDispatches
+ * for each dispatch:                (a left-recursive precedence loop decision)
+ *   decision
+ *   numCutoffs
+ *   cutoffs[numCutoffs]             (sorted; class(p) = #cutoffs &lt; p)
+ *   tableIndex[numCutoffs+1]        (table of each precedence class)
  * </pre>
+ *
+ * <p>Identical class tables are deduplicated by content and shared through
+ * their table index.</p>
  */
 public class SerializedStaticDFAs extends OutputModelObject {
-	public static final int FORMAT_VERSION = 3;
+	public static final int FORMAT_VERSION = 4;
 
 	public final int numTables;
 	/** Base64 text segments of the serialized blob, one rendered per line. */
@@ -48,42 +60,102 @@ public class SerializedStaticDFAs extends OutputModelObject {
 	/** One human-readable provenance line per table, for a generated comment. */
 	public final List<String> tableComments = new ArrayList<String>();
 
-	public SerializedStaticDFAs(OutputModelFactory factory, Map<Integer, StaticDFA> dfas) {
+	public SerializedStaticDFAs(OutputModelFactory factory,
+								Map<Integer, StaticDFA> dfas,
+								Map<Integer, PrecedenceStaticDFA> precDfas) {
 		super(factory);
-		this.numTables = dfas.size();
 		IntegerList data = new IntegerList();
-		appendIntStream(dfas, data, tableComments);
+		this.numTables = appendIntStream(dfas, precDfas, data, tableComments);
 		segments = CompactSerializer.encode(data.toArray());
 	}
 
 	/**
 	 * Append the logical int stream for the tables to {@code data} and one
-	 * provenance line per table to {@code comments}. Shared with
-	 * {@link SerializedBase64ATN}, which appends the stream after the ATN
-	 * ints so both are decoded from a single blob.
+	 * provenance line per table/dispatch to {@code comments}; returns the
+	 * number of tables written. Shared with {@link SerializedBase64ATN},
+	 * which appends the stream after the ATN ints so both are decoded from
+	 * a single blob.
 	 */
-	public static void appendIntStream(Map<Integer, StaticDFA> dfas,
-									   IntegerList data,
-									   List<String> comments) {
+	public static int appendIntStream(Map<Integer, StaticDFA> dfas,
+									  Map<Integer, PrecedenceStaticDFA> precDfas,
+									  IntegerList data,
+									  List<String> comments) {
+		List<StaticDFA> tables = new ArrayList<StaticDFA>();
+		List<Integer> tableDecisions = new ArrayList<Integer>();
 		int numDecisionSlots = 0;
-		for (StaticDFA dfa : dfas.values()) {
-			numDecisionSlots = Math.max(numDecisionSlots, dfa.decision+1);
+
+		if (dfas != null) {
+			for (StaticDFA dfa : dfas.values()) {
+				tables.add(dfa);
+				tableDecisions.add(dfa.decision);
+				numDecisionSlots = Math.max(numDecisionSlots, dfa.decision+1);
+			}
+		}
+
+		// dispatches reference class tables by index, deduplicated by content
+		List<int[]> dispatches = new ArrayList<int[]>();
+		if (precDfas != null) {
+			for (PrecedenceStaticDFA group : precDfas.values()) {
+				numDecisionSlots = Math.max(numDecisionSlots, group.decision+1);
+				int[] entry = new int[2 + group.cutoffs.length + group.tables.length];
+				entry[0] = group.decision;
+				entry[1] = group.cutoffs.length;
+				System.arraycopy(group.cutoffs, 0, entry, 2, group.cutoffs.length);
+				StringBuilder comment = new StringBuilder("decision "+group.decision
+					+": precedence-dispatched over cutoffs "+Arrays.toString(group.cutoffs)
+					+", tables");
+				for (int c = 0; c < group.tables.length; c++) {
+					StaticDFA t = group.tables[c];
+					int idx = indexOf(tables, t);
+					if (idx < 0) {
+						idx = tables.size();
+						tables.add(t);
+						tableDecisions.add(-1);
+					}
+					entry[2 + group.cutoffs.length + c] = idx;
+					comment.append(c == 0 ? " [" : " ").append(idx);
+				}
+				comment.append(']');
+				dispatches.add(entry);
+				comments.add(comment.toString());
+			}
 		}
 
 		data.add(FORMAT_VERSION);
-		data.add(dfas.size());
+		data.add(tables.size());
 		data.add(numDecisionSlots);
-		for (StaticDFA dfa : dfas.values()) {
-			data.add(dfa.decision);
+		for (int i = 0; i < tables.size(); i++) {
+			StaticDFA dfa = tables.get(i);
+			data.add(tableDecisions.get(i));
 			data.add(dfa.numStates);
 			data.add(dfa.edges.length);
 			for (int v : dfa.accepts) data.add(v);
 			for (int v : dfa.fallbacks) data.add(v);
 			for (int v : dfa.edgeOffsets) data.add(v);
 			for (int v : dfa.edges) data.add(v);
-			comments.add("decision "+dfa.decision+": "
-				+(dfa.cyclic ? "LL(*) cyclic" : "LL(k), k="+dfa.maxK)
+			comments.add((tableDecisions.get(i) >= 0
+					? "decision "+dfa.decision : "table "+i+" (decision "+dfa.decision+")")
+				+": "+(dfa.cyclic ? "LL(*) cyclic" : "LL(k), k="+dfa.maxK)
 				+", "+dfa.numStates+" states");
 		}
+		data.add(dispatches.size());
+		for (int[] entry : dispatches) {
+			for (int v : entry) data.add(v);
+		}
+		return tables.size();
+	}
+
+	/** Index of a table with identical content, or -1. */
+	private static int indexOf(List<StaticDFA> tables, StaticDFA t) {
+		for (int i = 0; i < tables.size(); i++) {
+			StaticDFA o = tables.get(i);
+			if (o == t || (Arrays.equals(o.accepts, t.accepts)
+				&& Arrays.equals(o.fallbacks, t.fallbacks)
+				&& Arrays.equals(o.edgeOffsets, t.edgeOffsets)
+				&& Arrays.equals(o.edges, t.edges))) {
+				return i;
+			}
+		}
+		return -1;
 	}
 }

@@ -14,6 +14,7 @@ declare -a GRAMMARS=(
     "SimpleLR"
     "Labels"
     "StaticDFA"
+    "LrDfa"
 #    "FHIRPath"
 )
 
@@ -25,6 +26,7 @@ declare -a ADDITIONAL_ARGS=(
     ""
     ""
     ""
+    "-Xstatic-dfa"
     "-Xstatic-dfa"
 )
 
