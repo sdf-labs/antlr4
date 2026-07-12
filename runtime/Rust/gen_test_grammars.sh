@@ -15,6 +15,7 @@ declare -a GRAMMARS=(
     "Labels"
     "StaticDFA"
     "LrDfa"
+    "FuzzExpr"
 #    "FHIRPath"
 )
 
@@ -26,6 +27,7 @@ declare -a ADDITIONAL_ARGS=(
     ""
     ""
     ""
+    "-Xstatic-dfa"
     "-Xstatic-dfa"
     "-Xstatic-dfa"
 )
@@ -43,3 +45,10 @@ for i in "${!GRAMMARS[@]}"; do
     echo "Generating: $grammar"
     (cd "$SCRIPT_DIR/grammars" && "${cmd[@]}")
 done
+
+# The differential-fuzz twin: FuzzExpr generated WITHOUT -Xstatic-dfa into a
+# sibling module, so tests can compare table-driven and adaptive prediction
+# on the same grammar (tests/fuzz_differential_tests.rs).
+echo "Generating: FuzzExpr (adaptive twin)"
+(cd "$SCRIPT_DIR/grammars" && java -cp "$ANTLR_PATH" org.antlr.v4.Tool -Dlanguage=Rust \
+    -o ../tests/gen/adaptive FuzzExpr.g4)

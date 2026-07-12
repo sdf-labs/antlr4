@@ -30,7 +30,8 @@ import java.util.Base64;
  *   decision                        (-1: referenced only via a dispatch below)
  *   numStates
  *   numEdgeInts
- *   accepts[numStates]              (predicted alt per state; 0 = non-accept)
+ *   accepts[numStates]              (predicted alt per state; 0 = non-accept;
+ *                                    -1 = escape: defer to adaptivePredict)
  *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
@@ -39,7 +40,8 @@ import java.util.Base64;
  *   decision
  *   numCutoffs
  *   cutoffs[numCutoffs]             (sorted; class(p) = #cutoffs &lt; p)
- *   tableIndex[numCutoffs+1]        (table of each precedence class)
+ *   tableIndex[numCutoffs+1]        (table of each precedence class;
+ *                                    -1 = class dispatches to adaptivePredict)
  * </pre>
  *
  * <p>State 0 of each table is its start state; {@code accepts[s] > 0} marks
@@ -58,7 +60,7 @@ import java.util.Base64;
  */
 public class StaticDFATables {
 	/** Must match the tool's SerializedStaticDFAs.FORMAT_VERSION. */
-	public static final int FORMAT_VERSION = 4;
+	public static final int FORMAT_VERSION = 5;
 
 	/** Concatenated per-table data: accepts, fallbacks, edgeOffsets, edges. */
 	protected final int[] data;
@@ -139,11 +141,17 @@ public class StaticDFATables {
 		return new StaticDFATables(data.toArray(), metas, decisionToTable, dispatchData.toArray());
 	}
 
+	/** {@code accepts} sentinel: a hybrid table's escape state - the walker
+	 *  defers the whole prediction to {@code adaptivePredict}. */
+	public static final int ESCAPE = -1;
+
 	/**
 	 * The table serving {@code decision}: {@code precedence} (the parser's
 	 * current precedence, i.e. the top of its precedence stack) selects the
 	 * precedence class of dispatched decisions - the operator loops of
-	 * left-recursive rules - and is ignored for plain ones.
+	 * left-recursive rules - and is ignored for plain ones. Returns -1 when
+	 * the selected precedence class has no static table and the prediction
+	 * must run through {@code adaptivePredict}.
 	 */
 	public int tableFor(int decision, int precedence) {
 		int table = decisionToTable[decision];
@@ -158,7 +166,8 @@ public class StaticDFATables {
 		return table;
 	}
 
-	/** Predicted alternative if {@code state} of {@code table} accepts; else 0. */
+	/** Predicted alternative if {@code state} of {@code table} accepts;
+	 *  0 = not an accept state; {@link #ESCAPE} = escape state. */
 	public int accept(int table, int state) {
 		int acceptsAt = metas[table*5];
 		return data[acceptsAt+state];

@@ -35,7 +35,11 @@ public class PrecedenceStaticDFA {
 	public final int decision;
 	/** Sorted distinct precedence-guard constants; class(p) = |{c : c &lt; p}|. */
 	public final int[] cutoffs;
-	/** One table per precedence class; length {@code cutoffs.length + 1}. */
+	/**
+	 * One table per precedence class; length {@code cutoffs.length + 1}.
+	 * A null entry means the class has no static table (not even a hybrid
+	 * one) and dispatches straight to {@code adaptivePredict}.
+	 */
 	public final StaticDFA[] tables;
 
 	public PrecedenceStaticDFA(int decision, int[] cutoffs, StaticDFA[] tables) {

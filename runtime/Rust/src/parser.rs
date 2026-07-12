@@ -476,21 +476,36 @@ where
     /// per-prediction allocation.
     ///
     /// Returns the predicted alternative (1-based, decision-transition
-    /// numbering identical to `adaptive_predict`). A lookahead token
-    /// matching no table edge produces a `NoViableAlt` error anchored at the
-    /// decision start token, matching `adaptive_predict`'s convention.
+    /// numbering identical to `adaptive_predict`), or
+    /// [`crate::atn::INVALID_ALT`] (0) when the table defers the prediction
+    /// to the adaptive engine - a hybrid table's escape state, or a
+    /// precedence class without a table. Generated call sites rerun such
+    /// predictions through `adaptive_predict` (sound: the walker never
+    /// consumes input). A lookahead token matching no table edge produces a
+    /// `NoViableAlt` error anchored at the decision start token, matching
+    /// `adaptive_predict`'s convention.
     pub fn dfa_predict(&mut self, decision: i32) -> Result<i32, ANTLRError> {
         // the precedence selects the table of dispatched decisions (the
         // operator loops of left-recursive rules); plain decisions ignore it
         let precedence = self.get_precedence();
-        let dfa = self
+        let Some(dfa) = self
             .atn_manager
             .atn()
             .static_dfas
-            .table(decision, precedence);
+            .table(decision, precedence)
+        else {
+            // this precedence class has no static table
+            return Ok(crate::atn::INVALID_ALT);
+        };
         let mut s = 0usize;
         let mut i = 1isize;
         loop {
+            if dfa.is_escape(s) {
+                // hybrid-table escape: the caller reruns the prediction
+                // through the adaptive engine (no input was consumed, so
+                // the rescan starts clean)
+                return Ok(crate::atn::INVALID_ALT);
+            }
             if let Some(alt) = dfa.accept(s) {
                 return Ok(alt);
             }

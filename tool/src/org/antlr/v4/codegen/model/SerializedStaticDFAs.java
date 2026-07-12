@@ -36,7 +36,8 @@ import java.util.Map;
  *   decision                        (-1: referenced only via a dispatch below)
  *   numStates
  *   numEdgeInts
- *   accepts[numStates]              (predicted alt per state; 0 = non-accept)
+ *   accepts[numStates]              (predicted alt per state; 0 = non-accept;
+ *                                    -1 = escape: defer to adaptivePredict)
  *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
@@ -45,14 +46,15 @@ import java.util.Map;
  *   decision
  *   numCutoffs
  *   cutoffs[numCutoffs]             (sorted; class(p) = #cutoffs &lt; p)
- *   tableIndex[numCutoffs+1]        (table of each precedence class)
+ *   tableIndex[numCutoffs+1]        (table of each precedence class;
+ *                                    -1 = class dispatches to adaptivePredict)
  * </pre>
  *
  * <p>Identical class tables are deduplicated by content and shared through
  * their table index.</p>
  */
 public class SerializedStaticDFAs extends OutputModelObject {
-	public static final int FORMAT_VERSION = 4;
+	public static final int FORMAT_VERSION = 5;
 
 	public final int numTables;
 	/** Base64 text segments of the serialized blob, one rendered per line. */
@@ -106,11 +108,17 @@ public class SerializedStaticDFAs extends OutputModelObject {
 					+", tables");
 				for (int c = 0; c < group.tables.length; c++) {
 					StaticDFA t = group.tables[c];
-					int idx = indexOf(tables, t);
-					if (idx < 0) {
-						idx = tables.size();
-						tables.add(t);
-						tableDecisions.add(-1);
+					int idx;
+					if (t == null) {
+						idx = -1; // class dispatches to adaptivePredict
+					}
+					else {
+						idx = indexOf(tables, t);
+						if (idx < 0) {
+							idx = tables.size();
+							tables.add(t);
+							tableDecisions.add(-1);
+						}
 					}
 					entry[2 + group.cutoffs.length + c] = idx;
 					comment.append(c == 0 ? " [" : " ").append(idx);
@@ -133,10 +141,15 @@ public class SerializedStaticDFAs extends OutputModelObject {
 			for (int v : dfa.fallbacks) data.add(v);
 			for (int v : dfa.edgeOffsets) data.add(v);
 			for (int v : dfa.edges) data.add(v);
+			int escapes = 0;
+			for (int v : dfa.accepts) {
+				if (v == StaticDFA.ESCAPE) escapes++;
+			}
 			comments.add((tableDecisions.get(i) >= 0
 					? "decision "+dfa.decision : "table "+i+" (decision "+dfa.decision+")")
 				+": "+(dfa.cyclic ? "LL(*) cyclic" : "LL(k), k="+dfa.maxK)
-				+", "+dfa.numStates+" states");
+				+", "+dfa.numStates+" states"
+				+(escapes > 0 ? ", "+escapes+" adaptive escapes" : ""));
 		}
 		data.add(dispatches.size());
 		for (int[] entry : dispatches) {
