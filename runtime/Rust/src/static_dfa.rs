@@ -24,7 +24,8 @@
 //!   decision                       (-1: referenced only via a dispatch below)
 //!   numStates
 //!   numEdgeInts
-//!   accepts[numStates]             (predicted alt per state; 0 = non-accept)
+//!   accepts[numStates]             (predicted alt per state; 0 = non-accept;
+//!                                    -1 = escape: defer to adaptive prediction)
 //!   fallbacks[numStates]           (error-avoidance alt per state; 0 = none)
 //!   edgeOffsets[numStates+1]       (index of each state's first edge i32)
 //!   edges[numEdgeInts]             ((lo, hi, target) triples, lo-sorted per state)
@@ -33,7 +34,8 @@
 //!   decision
 //!   numCutoffs
 //!   cutoffs[numCutoffs]            (sorted; class(p) = #cutoffs < p)
-//!   tableIndex[numCutoffs+1]       (table of each precedence class)
+//!   tableIndex[numCutoffs+1]       (table of each precedence class;
+//!                                    -1 = class dispatches to adaptive prediction)
 //! ```
 //!
 //! Precedence dispatches serve the operator loops of left-recursive rules:
@@ -46,7 +48,7 @@
 
 /// Format version understood by this runtime; must match the tool's
 /// `SerializedStaticDFAs.FORMAT_VERSION`.
-pub const FORMAT_VERSION: i32 = 4;
+pub const FORMAT_VERSION: i32 = 5;
 
 /// The deserialized static prediction tables of one generated parser.
 ///
@@ -184,10 +186,12 @@ impl StaticDFATables {
     /// The table for a decision; `precedence` (the parser's current
     /// precedence, i.e. the top of its precedence stack) selects the
     /// precedence class of dispatched decisions and is ignored for plain
-    /// ones. Panics if the decision has no static table (generated code
-    /// only references decisions it has tables for).
+    /// ones. `None` means the selected precedence class has no static
+    /// table and the prediction must run through the adaptive engine.
+    /// Panics if the decision itself has no table entry at all (generated
+    /// code only references decisions it has tables for).
     #[inline]
-    pub fn table(&self, decision: i32, precedence: i32) -> StaticDFATable<'_> {
+    pub fn table(&self, decision: i32, precedence: i32) -> Option<StaticDFATable<'_>> {
         let mut t = self.decision_to_table[decision as usize];
         if t <= -2 {
             // precedence dispatch: class(p) = #cutoffs < p
@@ -196,6 +200,10 @@ impl StaticDFATables {
             let cutoffs = &self.dispatch_data[at + 1..at + 1 + num_cutoffs];
             let class = cutoffs.iter().take_while(|&&c| c < precedence).count();
             t = self.dispatch_data[at + 1 + num_cutoffs + class];
+            if t < 0 {
+                // this precedence class dispatches to adaptive prediction
+                return None;
+            }
         }
         assert!(t >= 0, "no static DFA table for decision {}", decision);
         let (accepts_at, fallbacks_at, edge_offsets_at, edges_at) = self.metas[t as usize];
@@ -204,14 +212,19 @@ impl StaticDFATables {
             .get(t as usize + 1)
             .map(|m| m.0)
             .unwrap_or(self.data.len());
-        StaticDFATable {
+        Some(StaticDFATable {
             accepts: &self.data[accepts_at..fallbacks_at],
             fallbacks: &self.data[fallbacks_at..edge_offsets_at],
             edge_offsets: &self.data[edge_offsets_at..edges_at],
             edges: &self.data[edges_at..end],
-        }
+        })
     }
 }
+
+/// `accepts` sentinel: an escape state of a hybrid table - the walker
+/// defers the whole prediction to the adaptive engine (the table never
+/// consumes input, so the rescan is trivially sound).
+pub const ESCAPE: i32 = -1;
 
 impl<'a> StaticDFATable<'a> {
     /// Predicted alternative if `state` is an accept state.
@@ -223,6 +236,13 @@ impl<'a> StaticDFATable<'a> {
         } else {
             None
         }
+    }
+
+    /// True if `state` is an escape state: prediction must be handed to
+    /// the adaptive engine.
+    #[inline]
+    pub fn is_escape(&self, state: usize) -> bool {
+        self.accepts[state] == ESCAPE
     }
 
     /// Error-avoidance fallback alternative of `state`, if any.

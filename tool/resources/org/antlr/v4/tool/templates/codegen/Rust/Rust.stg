@@ -770,7 +770,11 @@ loop {
 // carried inside the serialized ATN blob (see SerializedBase64ATN) and
 // decoded together with the ATN into its static_dfas field.
 
-staticDFAPredict(choice) ::= "<self()>.base.dfa_predict(<choice.decision>)?"
+// The static-table prediction with the hybrid-escape fallback: a table may
+// return INVALID_ALT to defer the prediction (an escape state of a partial
+// table, or a precedence class without a table); the decision then reruns
+// through adaptive_predict - sound because dfa_predict never consumes input.
+staticDFAPredict(choice) ::= "{ let _sdp = <self()>.base.dfa_predict(<choice.decision>)?; if _sdp == INVALID_ALT { <self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? } else { _sdp } }"
 
 DFAAltBlock(choice, preamble, alts, error) ::= <<
 <self()>.base.set_state(<choice.stateNumber>);

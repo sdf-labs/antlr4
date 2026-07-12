@@ -105,7 +105,21 @@ public class DecisionClassifier {
 		/** The precedence loop decision of a left-recursive rule; stays on adaptivePredict. */
 		LR_PRECEDENCE,
 		/** DFA construction exceeded {@link #maxDfaStates}. */
-		OVERFLOW
+		OVERFLOW,
+		/**
+		 * A partial (depth- and size-bounded) static DFA with escape states:
+		 * lookahead prefixes the table fully proves are predicted
+		 * statically; everything else - untrusted conflicts, and the
+		 * frontier beyond the depth/size budget - reaches an escape state,
+		 * where the walker defers to {@code adaptivePredict} (which rescans
+		 * from the decision start; the table never consumes input).
+		 * Behavior-preserving by construction: the table only
+		 * short-circuits what it proved, the reference engine handles the
+		 * rest. This serves the hot paths of decisions whose complete SLL
+		 * DFA is impractically large (unbounded phantom-FOLLOW scans) or
+		 * contains genuinely context-sensitive corners.
+		 */
+		HYBRID
 	}
 
 	public static class Result {
@@ -143,6 +157,19 @@ public class DecisionClassifier {
 		public PrecedenceStaticDFA precDfa;
 		/** For LR_PRECEDENCE decisions: report detail (per-class outcomes). */
 		public String precNote;
+		/** For HYBRID tables: number of escape states. */
+		public int escapes;
+		/**
+		 * For HYBRID tables: fraction of the start state's outgoing token
+		 * space whose successor subgraph contains at least one accept
+		 * state - i.e., the share of first tokens for which the table can
+		 * complete some predictions (typically the short-lookahead
+		 * majority; longer scans down the same edges escape). A static
+		 * proxy for hot-path coverage: edges that lead exclusively to
+		 * escapes contribute nothing and a table whose start state resolves
+		 * nothing is pure overhead.
+		 */
+		public double coverage;
 
 		public Result(DecisionState decisionState) {
 			this.decisionState = decisionState;
@@ -209,6 +236,23 @@ public class DecisionClassifier {
 	public int maxDfaStates = 2000;
 
 	/**
+	 * Hybrid-table construction bounds (see {@link Category#HYBRID}): the
+	 * lookahead depth beyond which states become escapes, and the state
+	 * budget after which the remaining frontier becomes escapes. The work
+	 * queue is FIFO, so construction is breadth-first by lookahead depth
+	 * and the emitted prefix is exactly the shallowest - hottest - states.
+	 */
+	public int hybridDepthCap = 4;
+	public int hybridStateCap = 64;
+	/**
+	 * Minimum start-state coverage (see {@link Result#coverage}) for a
+	 * hybrid table to be worth its size: below this, nearly every
+	 * prediction would escape to adaptivePredict anyway and the table is
+	 * pure overhead.
+	 */
+	public double hybridMinCoverage = 0.1;
+
+	/**
 	 * Iterative-deepening schedule for the calling-context depth bound. The
 	 * first attempt is exact (widening only at direct call-site recursion,
 	 * which is required for termination and is what yields cyclic LL(*)
@@ -268,6 +312,13 @@ public class DecisionClassifier {
 	/** During precedence-mode construction: exact conflicts are not trusted. */
 	protected boolean trustExactAmbig = true;
 	/**
+	 * When true, {@link #buildDFA} builds a bounded hybrid table: untrusted
+	 * conflicts and the frontier beyond {@link #hybridDepthCap}/
+	 * {@link #hybridStateCap} become escape states instead of failing the
+	 * decision (see {@link Category#HYBRID}).
+	 */
+	protected boolean hybridMode;
+	/**
 	 * Lazily built: state number of a rule call's follow state - the state
 	 * grammar-wide FOLLOW links from the callee's stop state point back to -
 	 * mapped to that call's RuleTransition. Used to re-derive, on the
@@ -308,17 +359,45 @@ public class DecisionClassifier {
 		}
 
 		// iterative deepening: exact first, then progressively wider approximation
-		Result last = res;
+		Result outcome = res;
+		boolean allOverflowed = true;
 		for (int depthBound : wideningDepths) {
 			Result attempt = new Result(s);
 			attempt.wideningDepth = depthBound;
 			if (!buildDFA(s, attempt, depthBound)) {
-				return attempt;
+				outcome = attempt;
+				allOverflowed = false;
+				break;
 			}
-			last = attempt;
+			outcome = attempt;
 		}
-		last.category = Category.OVERFLOW;
-		return last;
+		if (allOverflowed) outcome.category = Category.OVERFLOW;
+
+		// full construction failed: try a bounded hybrid table (exact
+		// contexts; the depth cap keeps it small) whose escape states defer
+		// untrusted conflicts and the deep frontier to adaptivePredict
+		if (outcome.dfa == null
+			&& (outcome.category == Category.OVERFLOW
+				|| outcome.category == Category.CONTEXT_SENSITIVE)) {
+			Result hybrid = classifyHybrid(s);
+			if (hybrid != null && hybrid.dfa != null) return hybrid;
+		}
+		return outcome;
+	}
+
+	/** One hybrid construction attempt; null if it overflowed (can't happen
+	 *  in practice: the depth/state caps bound it) or found predicates. */
+	protected Result classifyHybrid(DecisionState s) {
+		Result hybrid = new Result(s);
+		hybrid.wideningDepth = Integer.MAX_VALUE;
+		this.hybridMode = true;
+		try {
+			if (buildDFA(s, hybrid, Integer.MAX_VALUE)) return null;
+		}
+		finally {
+			this.hybridMode = false;
+		}
+		return hybrid;
 	}
 
 	/**
@@ -390,23 +469,11 @@ public class DecisionClassifier {
 			ci++;
 		}
 
-		if (callByFollowState == null) {
-			callByFollowState = new HashMap<Integer, RuleTransition>();
-			for (ATNState st : atn.states) {
-				if (st == null) continue;
-				for (int i = 0; i < st.getNumberOfTransitions(); i++) {
-					Transition t = st.transition(i);
-					if (t instanceof RuleTransition) {
-						RuleTransition rt = (RuleTransition)t;
-						callByFollowState.put(rt.followState.stateNumber, rt);
-					}
-				}
-			}
-		}
+		callByFollowState();
 
 		StaticDFA[] tables = new StaticDFA[reps.length];
 		StringBuilder note = new StringBuilder();
-		boolean allStatic = true;
+		boolean anyTable = false;
 		int maxK = 0;
 		int totalStates = 0;
 		this.precRuleIndex = s.ruleIndex;
@@ -421,6 +488,19 @@ public class DecisionClassifier {
 					if (!buildDFA(s, a, depthBound)) { attempt = a; break; }
 					attempt = a; // overflow at this bound; try tighter widening
 				}
+				if (attempt.dfa == null && !attempt.sawPredicate) {
+					// full construction failed for this class: bounded
+					// hybrid table with adaptive escapes
+					Result h = new Result(s);
+					h.wideningDepth = Integer.MAX_VALUE;
+					this.hybridMode = true;
+					try {
+						if (!buildDFA(s, h, Integer.MAX_VALUE)) attempt = h;
+					}
+					finally {
+						this.hybridMode = false;
+					}
+				}
 				res.sawPrecPredicate |= attempt.sawPrecPredicate;
 				res.usedWidening |= attempt.usedWidening;
 				if (note.length() > 0) note.append(' ');
@@ -428,8 +508,12 @@ public class DecisionClassifier {
 					: c < cutoffs.length ? "=" + (cutoffs[c-1]+1) + ".." + cutoffs[c]
 					: ">" + cutoffs[cutoffs.length-1]).append(':');
 				if (attempt.dfa == null) {
-					allStatic = false;
-					note.append(attempt.category);
+					if (attempt.category == Category.HYBRID) {
+						// hybrid construction worked but fell below the
+						// coverage floor; the class stays adaptive
+						note.append(String.format("adaptive(cover=%.0f%%)", attempt.coverage*100));
+					}
+					else note.append(attempt.category);
 					if (!attempt.contextSensitiveConflicts.isEmpty()) {
 						note.append("/ctx").append(distinct(attempt.contextSensitiveConflicts));
 					}
@@ -439,13 +523,19 @@ public class DecisionClassifier {
 					if (!attempt.exactAmbigConflicts.isEmpty()) {
 						note.append("/exact").append(distinct(attempt.exactAmbigConflicts));
 					}
-					if (abortOnUntrustedConflict) break;
 				}
 				else {
+					anyTable = true;
 					tables[c] = attempt.dfa;
 					maxK = Math.max(maxK, attempt.k);
 					totalStates += attempt.numDfaStates;
-					note.append(attempt.dfa.cyclic ? "LL(*)" : "k=" + attempt.k);
+					if (attempt.category == Category.HYBRID) {
+						note.append(String.format("hyb(cover=%.0f%%)", attempt.coverage*100));
+						res.escapes += attempt.escapes;
+					}
+					else {
+						note.append(attempt.dfa.cyclic ? "LL(*)" : "k=" + attempt.k);
+					}
 				}
 			}
 		}
@@ -456,12 +546,87 @@ public class DecisionClassifier {
 		}
 
 		res.precNote = "classes=" + reps.length + " [" + note + "]";
-		if (allStatic) {
+		if (anyTable) {
+			// classes without a table dispatch to adaptivePredict (their
+			// dispatch entry is -1); the group is worthwhile as long as any
+			// class predicts statically
 			res.precDfa = new PrecedenceStaticDFA(s.decision, cutoffs, tables);
 			res.k = maxK;
 			res.numDfaStates = totalStates;
 		}
 		return res;
+	}
+
+	/** Lazily built {@link #callByFollowState}. */
+	protected Map<Integer, RuleTransition> callByFollowState() {
+		if (callByFollowState == null) {
+			callByFollowState = new HashMap<Integer, RuleTransition>();
+			for (ATNState st : atn.states) {
+				if (st == null) continue;
+				for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+					Transition t = st.transition(i);
+					if (t instanceof RuleTransition) {
+						RuleTransition rt = (RuleTransition)t;
+						callByFollowState.put(rt.followState.stateNumber, rt);
+					}
+				}
+			}
+		}
+		return callByFollowState;
+	}
+
+	/**
+	 * Evaluate a precedence guard {@code precpred(n)} of rule {@code rule}
+	 * against the precedence the rule was entered with in this closure
+	 * path, when that value is statically known - and it usually is: the
+	 * top return state of the configuration's context identifies the call
+	 * site (it is the follow state of the {@link RuleTransition} that
+	 * entered the rule), and the transition carries the call's constant
+	 * precedence argument. Depth-bounded widening preserves the immediate
+	 * return frame, so the evaluation stays available at every widening
+	 * level except the fully context-free approximation.
+	 *
+	 * <p>Returns null when the entry precedence is unknown or ambiguous:
+	 * empty/wildcard context (the decision's own frame, or a phantom frame
+	 * entered by popping through the decision boundary), a wildcard among
+	 * the tops of a merged context, or merged tops with disagreeing guard
+	 * outcomes. Callers must then fall back to assumed-true traversal with
+	 * {@link #PRECPRED_TAINT} - the evaluation only ever prunes paths whose
+	 * guard provably fails.</p>
+	 *
+	 * <p>Why pruning is behavior-preserving:</p>
+	 * <ul>
+	 * <li>Against the parse: a lookahead path through a false precedence
+	 * guard is unparseable - the generated code checks the guard and fails.
+	 * Pruning removes no real parse.</li>
+	 * <li>Against {@code adaptivePredict}, which traverses these guards as
+	 * pure epsilon (it evaluates precedence predicates only in frame 0 of a
+	 * precedence DFA start state) and therefore keeps the pruned paths: the
+	 * left-recursion transform's guards only restrict <em>which
+	 * derivation</em> produces a token string, never the strings
+	 * themselves. A phantom "consume this operator in a deeper frame" path
+	 * is duplicated, token for token and with the same alternative at the
+	 * decision under construction, by the legal path that exits the deeper
+	 * frames (loop exits are unguarded) and consumes the operator at an
+	 * outer loop level whose weaker guard admits it. So the pruned closure
+	 * computes the same prefix-to-viable-alternatives map, just without
+	 * enumerating the redundant derivations that blow up the configuration
+	 * space in precedence ladders.</li>
+	 * </ul>
+	 */
+	protected Boolean evalPrecpredFromContext(PredictionContext ctx, int rule, int n) {
+		if (ctx == null || ctx.isEmpty()) return null;
+		Boolean agreed = null;
+		for (int i = 0; i < ctx.size(); i++) {
+			int returnState = ctx.getReturnState(i);
+			if (returnState == PredictionContext.EMPTY_RETURN_STATE) return null;
+			RuleTransition call = callByFollowState().get(returnState);
+			if (call == null || call.target.ruleIndex != rule) return null;
+			boolean outcome = n >= call.precedence;
+			if (agreed == null) agreed = outcome;
+			else if (agreed != outcome) return null;
+		}
+		return agreed;
 	}
 
 	/**
@@ -534,6 +699,7 @@ public class DecisionClassifier {
 		List<List<IntervalSet>> edgeLabels = new ArrayList<List<IntervalSet>>();
 		List<Integer> acceptAlts = new ArrayList<Integer>(); // 0 = not an accept state
 		List<Integer> fallbackAlts = new ArrayList<Integer>(); // 0 = none
+		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
 		Set<ATNConfig> startBusy = new HashSet<ATNConfig>();
@@ -553,6 +719,7 @@ public class DecisionClassifier {
 		edgeLabels.add(new ArrayList<IntervalSet>());
 		acceptAlts.add(0);
 		fallbackAlts.add(0);
+		stateDepth.add(0);
 
 		Deque<Integer> work = new ArrayDeque<Integer>();
 		work.add(0);
@@ -606,6 +773,11 @@ public class DecisionClassifier {
 					// both runtime SLL and full-context LL
 					acceptAlts.set(d, conflicting.nextSetBit(0));
 				}
+				else if (hybridMode) {
+					// the conflict cannot be resolved statically: defer
+					// this state to adaptivePredict
+					acceptAlts.set(d, StaticDFA.ESCAPE);
+				}
 				else if (abortOnUntrustedConflict) {
 					// not a trusted exact ambiguity: no widening level can
 					// make this decision table-eligible
@@ -613,6 +785,15 @@ public class DecisionClassifier {
 					res.category = Category.CONTEXT_SENSITIVE;
 					return false;
 				}
+				continue;
+			}
+
+			if (hybridMode
+				&& (stateDepth.get(d) >= hybridDepthCap || states.size() >= hybridStateCap)) {
+				// beyond the depth/size budget: don't expand, defer to
+				// adaptivePredict (BFS order makes this the deep, cold
+				// frontier - the shallow hot states are already built)
+				acceptAlts.set(d, StaticDFA.ESCAPE);
 				continue;
 			}
 
@@ -644,6 +825,7 @@ public class DecisionClassifier {
 					edgeLabels.add(new ArrayList<IntervalSet>());
 					acceptAlts.add(0);
 					fallbackAlts.add(0);
+					stateDepth.add(stateDepth.get(d)+1);
 					work.add(id);
 				}
 				edges.get(d).add(id);
@@ -653,16 +835,37 @@ public class DecisionClassifier {
 
 		res.numDfaStates = states.size();
 		if (overflow) {
+			if (System.getProperty("antlr.dfa.debug") != null) {
+				dumpOverflowStats(s, states, depthBound);
+			}
 			res.category = Category.OVERFLOW;
 			return true;
 		}
 		if (res.sawPredicate) {
+			// user predicates gate viability in ways the table cannot
+			// represent; not eligible even for a hybrid table
 			res.category = Category.PREDICATED;
 			return false;
 		}
 
 		boolean cyclic = isCyclic(edges);
 		if (!cyclic) res.k = longestPath(edges);
+
+		int escapes = 0;
+		for (int a : acceptAlts) {
+			if (a == StaticDFA.ESCAPE) escapes++;
+		}
+		if (escapes > 0) {
+			// hybrid table: emit only if the start state itself resolves
+			// something - a start-state escape means nothing is decidable
+			res.category = Category.HYBRID;
+			res.escapes = escapes;
+			res.coverage = startCoverage(edges, edgeLabels, acceptAlts);
+			if (acceptAlts.get(0) != StaticDFA.ESCAPE && res.coverage >= hybridMinCoverage) {
+				res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, fallbackAlts, cyclic, res.k);
+			}
+			return false;
+		}
 
 		if (!res.contextSensitiveConflicts.isEmpty() || !res.approxConflicts.isEmpty()) {
 			res.category = Category.CONTEXT_SENSITIVE;
@@ -676,6 +879,89 @@ public class DecisionClassifier {
 			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, fallbackAlts, cyclic, res.k);
 		}
 		return false;
+	}
+
+	/**
+	 * Hot-path coverage proxy of a hybrid table: the fraction of the start
+	 * state's outgoing token space whose successor subgraph contains at
+	 * least one accept state. An edge leading exclusively to escapes (a
+	 * conflict right behind it at every depth) contributes nothing - the
+	 * table can never resolve a prediction down that path; an edge whose
+	 * subgraph mixes accepts and escapes resolves its short-lookahead
+	 * prefixes (typically the dynamic majority) and escapes the rest.
+	 */
+	protected static double startCoverage(List<List<Integer>> edges,
+										  List<List<IntervalSet>> edgeLabels,
+										  List<Integer> acceptAlts) {
+		int n = edges.size();
+		// reverse reachability from accept states
+		List<List<Integer>> reverse = new ArrayList<List<Integer>>(n);
+		for (int i = 0; i < n; i++) reverse.add(new ArrayList<Integer>());
+		for (int sIdx = 0; sIdx < n; sIdx++) {
+			for (int target : edges.get(sIdx)) reverse.get(target).add(sIdx);
+		}
+		boolean[] reachesAccept = new boolean[n];
+		Deque<Integer> work = new ArrayDeque<Integer>();
+		for (int i = 0; i < n; i++) {
+			if (acceptAlts.get(i) > 0) {
+				reachesAccept[i] = true;
+				work.add(i);
+			}
+		}
+		while (!work.isEmpty()) {
+			for (int prev : reverse.get(work.remove())) {
+				if (!reachesAccept[prev]) {
+					reachesAccept[prev] = true;
+					work.add(prev);
+				}
+			}
+		}
+		long total = 0, useful = 0;
+		List<Integer> startEdges = edges.get(0);
+		List<IntervalSet> startLabels = edgeLabels.get(0);
+		for (int e = 0; e < startEdges.size(); e++) {
+			int width = startLabels.get(e).size();
+			total += width;
+			if (reachesAccept[startEdges.get(e)]) useful += width;
+		}
+		return total == 0 ? 0 : (double)useful/total;
+	}
+
+	/** Diagnostics for overflowing decisions (-Dantlr.dfa.debug): where the
+	 *  configuration population concentrates, and its taint composition. */
+	private void dumpOverflowStats(DecisionState s, List<Set<ATNConfig>> states, int depthBound) {
+		Map<String, Integer> ruleHisto = new HashMap<String, Integer>();
+		int totalConfigs = 0, emptyCtx = 0, precTainted = 0, widenedTainted = 0, boundary = 0;
+		int maxSetSize = 0;
+		for (Set<ATNConfig> set : states) {
+			maxSetSize = Math.max(maxSetSize, set.size());
+			for (ATNConfig c : set) {
+				totalConfigs++;
+				String rn = g.getRule(c.state.ruleIndex).name;
+				ruleHisto.merge(rn, 1, Integer::sum);
+				if (c.context == null || c.context.isEmpty()) emptyCtx++;
+				if ((c.reachesIntoOuterContext & PRECPRED_TAINT) != 0) precTainted++;
+				if ((c.reachesIntoOuterContext & WIDENED_TAINT) != 0) widenedTainted++;
+				if ((c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0) boundary++;
+			}
+		}
+		List<Map.Entry<String, Integer>> top = new ArrayList<Map.Entry<String, Integer>>(ruleHisto.entrySet());
+		top.sort((a, b) -> b.getValue() - a.getValue());
+		StringBuilder sb = new StringBuilder();
+		sb.append("OVERFLOW-DEBUG d=").append(s.decision)
+		  .append(" depthBound=").append(depthBound)
+		  .append(" states=").append(states.size())
+		  .append(" configs=").append(totalConfigs)
+		  .append(" maxSet=").append(maxSetSize)
+		  .append(" emptyCtx=").append(emptyCtx)
+		  .append(" precTaint=").append(precTainted)
+		  .append(" widened=").append(widenedTainted)
+		  .append(" boundary=").append(boundary)
+		  .append("\n  top rules: ");
+		for (int i = 0; i < Math.min(8, top.size()); i++) {
+			sb.append(top.get(i).getKey()).append('=').append(top.get(i).getValue()).append(' ');
+		}
+		System.err.println(sb);
 	}
 
 	/** Serialize the recorded DFA into the flat table form used by codegen. */
@@ -915,6 +1201,7 @@ public class DecisionClassifier {
 				closure(callee, configs, busy, res, depth >= 0 ? depth+1 : depth);
 			}
 			else if (t instanceof PrecedencePredicateTransition) {
+				int n = ((PrecedencePredicateTransition)t).precedence;
 				if (precStartClosure && depth == 0) {
 					// Frame-0 guard of the precedence decision under
 					// construction: evaluate precpred(n) = n >= p against
@@ -922,18 +1209,32 @@ public class DecisionClassifier {
 					// precedence DFA start-state computation (pass 1 of
 					// applyPrecedenceFilter). Failing configs are
 					// eliminated; passing ones continue untainted.
-					if (((PrecedencePredicateTransition)t).precedence >= precEvalValue) {
+					if (n >= precEvalValue) {
 						closure(new ATNConfig(config, t.target), configs, busy, res, depth);
 					}
 				}
 				else {
-					// traversed as epsilon = assumed true, matching the
-					// runtime, which only evaluates precedence predicates
-					// in frame 0 of a precedence DFA start state
-					res.sawPrecPredicate = true;
-					ATNConfig c2 = new ATNConfig(config, t.target);
-					c2.reachesIntoOuterContext |= PRECPRED_TAINT;
-					closure(c2, configs, busy, res, depth);
+					// Deeper guard: evaluate against the constant precedence
+					// the enclosing rule was entered with, when the context
+					// identifies it (see evalPrecpredFromContext, including
+					// the argument for why the pruning is behavior-
+					// preserving even though adaptivePredict traverses these
+					// guards as epsilon). Unknown entry precedence falls
+					// back to the runtime's own treatment - assumed true -
+					// tainted as an over-approximation.
+					Boolean outcome = evalPrecpredFromContext(config.context, p.ruleIndex, n);
+					if (outcome != null) {
+						if (outcome) {
+							closure(new ATNConfig(config, t.target), configs, busy, res, depth);
+						}
+						// else: guard provably fails; path pruned
+					}
+					else {
+						res.sawPrecPredicate = true;
+						ATNConfig c2 = new ATNConfig(config, t.target);
+						c2.reachesIntoOuterContext |= PRECPRED_TAINT;
+						closure(c2, configs, busy, res, depth);
+					}
 				}
 			}
 			else if (t instanceof PredicateTransition) {
@@ -1153,6 +1454,11 @@ public class DecisionClassifier {
 			buf.append(String.format("%-22s d=%-4d %-17s", rule.name, r.decisionState.decision, r.category));
 			if (r.k >= 0) buf.append(" k=").append(r.k);
 			buf.append(" dfaStates=").append(r.numDfaStates);
+			if (r.category == Category.HYBRID) {
+				buf.append(" escapes=").append(r.escapes)
+				   .append(String.format(" cover=%.0f%%", r.coverage*100))
+				   .append(r.dfa == null ? " [adaptive]" : "");
+			}
 			if (!r.exactAmbigConflicts.isEmpty()) {
 				buf.append(" exactAmbigAlts=").append(distinct(r.exactAmbigConflicts));
 			}

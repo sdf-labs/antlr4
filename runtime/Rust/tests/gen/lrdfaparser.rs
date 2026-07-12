@@ -1334,14 +1334,14 @@ where
 			recog.base.with_mut_ctx(|ctx| { ctx.set_stop(tmp.map(|t| t as _)); });
 			recog.base.set_state(38);
 			recog.err_handler.sync(&mut recog.base)?;
-			_alt = recog.base.dfa_predict(2)?;
+			_alt = { let _sdp = recog.base.dfa_predict(2)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(2,&mut recog.base)? } else { _sdp } };
 			while { _alt!=2 && _alt!=INVALID_ALT } {
 				if _alt==1 {
 					recog.trigger_exit_rule_event()?;
 					{
 					recog.base.set_state(36);
 					recog.err_handler.sync(&mut recog.base)?;
-					match recog.base.dfa_predict(1)? {
+					match { let _sdp = recog.base.dfa_predict(1)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(1,&mut recog.base)? } else { _sdp } } {
 						1 =>{
 							{
 							/*recRuleLabeledAltStartAction*/
@@ -1488,7 +1488,7 @@ where
 				}
 				recog.base.set_state(40);
 				recog.err_handler.sync(&mut recog.base)?;
-				_alt = recog.base.dfa_predict(2)?;
+				_alt = { let _sdp = recog.base.dfa_predict(2)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(2,&mut recog.base)? } else { _sdp } };
 			}
 			}
 			Ok(())
@@ -1525,7 +1525,7 @@ static _serializedATN: [&'static str; 13] = [
     "AAAYFgIAAAAaTAIAAAAcHhQMAAAeIAoKAAAgSgYEAgwiJBQKAAAkJg4AAAAmSgYEAgwoKhQIAAAqLA4C",
     "AAAsSgYEAgouMBQGAAAwMgoSAAAyNAYEAgA0NgoUAAA2OAYEAgY4SgIAAAA6PBQSAAA8PgoCAAA+QAYE",
     "AgBAQgoEAABCSgIAAABERhQQAABGSgoGAABIHAIAAABIIgIAAABIKAIAAABILgIAAABIOgIAAABIRAIA",
-    "AABKUAIAAABMSAIAAABMTgIAAABOBgIAAABQTAIAAAAGGEhMCBAGAg4qAAoMBgIECAAAAAAAAAAAKioq",
+    "AABKUAIAAABMSAIAAABMTgIAAABOBgIAAABQTAIAAAAGGEhMChAGAg4qAAoMBgIECAAAAAAAAAAAKioq",
     "KioqKgICAgYGBAgIBgoKCAwOChAQBhISDAEQKgAEAgQCAgIEBAAAAAAAAAAAKioqKioqKioBAQICAgQE",
     "BAYGBggIEAoSEgwUFA4BECoABAIEAgIEBAQAAAAAAAAAACoqKioqKioqAQECAgIEBAQGBgYICBAKEhIM",
     "FBQOARI2AAQCBAIEAgQEBAAAAAAAAAAAADY2NjY2NjY2NgEBAgICBAQEBgYGCAgICgoODBAQChISDhQU",

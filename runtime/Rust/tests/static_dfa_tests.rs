@@ -151,12 +151,17 @@ fn test_no_viable_alt_handling() {
     }
 }
 
-/// The generated parser must contain zero adaptive_predict call sites.
+/// The generated parser must contain zero bare adaptive_predict call
+/// sites: every prediction goes through dfa_predict, and the only
+/// adaptive_predict occurrences are the hybrid-escape fallbacks inlined at
+/// each table-driven site (dead code for this grammar's escape-free
+/// tables).
 #[test]
 fn test_no_adaptive_predict_in_generated_code() {
     let src = include_str!("gen/staticdfaparser.rs");
-    assert!(
-        !src.contains("adaptive_predict"),
+    assert_eq!(
+        src.matches("adaptive_predict(").count(),
+        src.matches("if _sdp == INVALID_ALT").count(),
         "StaticDFA parser should be fully table-driven"
     );
     assert!(

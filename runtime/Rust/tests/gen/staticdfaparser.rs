@@ -588,7 +588,7 @@ where
 		let result: Result<(), ANTLRError> = (|| {
 			recog.base.set_state(23);
 			recog.err_handler.sync(&mut recog.base)?;
-			match recog.base.dfa_predict(0)? {
+			match { let _sdp = recog.base.dfa_predict(0)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(0,&mut recog.base)? } else { _sdp } } {
 				1 =>{
 					/*------- Outer Most Alt 1 -------*/
 					recog.base.with_mut_ctx(|ctx| {
@@ -946,7 +946,7 @@ where
 		let result: Result<(), ANTLRError> = (|| {
 			recog.base.set_state(30);
 			recog.err_handler.sync(&mut recog.base)?;
-			match recog.base.dfa_predict(1)? {
+			match { let _sdp = recog.base.dfa_predict(1)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(1,&mut recog.base)? } else { _sdp } } {
 				1 =>{
 					/*------- Outer Most Alt 1 -------*/
 					recog.base.with_mut_ctx(|ctx| {
@@ -1206,7 +1206,7 @@ where
 			{
 			recog.base.set_state(44);
 			recog.err_handler.sync(&mut recog.base)?;
-			_alt = recog.base.dfa_predict(3)?;
+			_alt = { let _sdp = recog.base.dfa_predict(3)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(3,&mut recog.base)? } else { _sdp } };
 			while { _alt!=2 && _alt!=INVALID_ALT } {
 				if _alt==1 {
 					{
@@ -1220,7 +1220,7 @@ where
 				}
 				recog.base.set_state(46);
 				recog.err_handler.sync(&mut recog.base)?;
-				_alt = recog.base.dfa_predict(3)?;
+				_alt = { let _sdp = recog.base.dfa_predict(3)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(3,&mut recog.base)? } else { _sdp } };
 			}
 			recog.base.set_state(47);
 			recog.base.match_token(StaticDFA_T__7,&mut recog.err_handler)?;
@@ -1341,7 +1341,7 @@ where
 				}
 				recog.base.set_state(54); 
 				recog.err_handler.sync(&mut recog.base)?;
-				_alt = recog.base.dfa_predict(4)?;
+				_alt = { let _sdp = recog.base.dfa_predict(4)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(4,&mut recog.base)? } else { _sdp } };
 				if _alt==2 || _alt==INVALID_ALT { break }
 			}
 			recog.base.set_state(56);
@@ -1445,7 +1445,7 @@ where
 			{
 			recog.base.set_state(61);
 			recog.err_handler.sync(&mut recog.base)?;
-			match recog.base.dfa_predict(5)? {
+			match { let _sdp = recog.base.dfa_predict(5)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(5,&mut recog.base)? } else { _sdp } } {
 				x if x == 1 =>{
 					{
 					recog.base.set_state(59);
@@ -1758,7 +1758,7 @@ where
 		let result: Result<(), ANTLRError> = (|| {
 			recog.base.set_state(70);
 			recog.err_handler.sync(&mut recog.base)?;
-			match recog.base.dfa_predict(6)? {
+			match { let _sdp = recog.base.dfa_predict(6)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(6,&mut recog.base)? } else { _sdp } } {
 				1 =>{
 					/*------- Outer Most Alt 1 -------*/
 					recog.base.with_mut_ctx(|ctx| {
@@ -1827,7 +1827,7 @@ static _serializedATN: [&'static str; 14] = [
     "AAAAWFQCAAAAWFoCAAAAWl4CAAAAXFgCAAAAXmAKEAAAYGIKFAAAYg4CAAAAZGYKEAAAZmoKEgAAaGQC",
     "AAAAamwCAAAAbGgCAAAAbG4CAAAAbnACAAAAcHIKEAAAcnQKFAAAdBICAAAAdngKEAAAeHwKEgAAenYC",
     "AAAAenwCAAAAfH4CAAAAfoABChAAAIABggEKFAAAggEWAgAAAIQBhgEKFgAAhgGOAQoYAACIAYoBChYA",
-    "AIoBjgEKGAAAjAGEAQIAAACMAYgBAgAAAI4BGgIAAAAOLjxKWGx6jAEIDA4AChgAAAYCBAAAAAAAAAwY",
+    "AIoBjgEKGAAAjAGEAQIAAACMAYgBAgAAAI4BGgIAAAAOLjxKWGx6jAEKDA4AChgAAAYCBAAAAAAAAAwY",
     "GBgYAgICCAgEBAQGBgYIAgoeAAAEAgAABAAAAAAGGBgYHhoaAgEBBAoKBg4OCBoaAgYIEgAAAgQAAAAA",
     "AAYSEhIQEAISEgQUFAYICBIAAAIEAAAAAAAGEhISEBACEhIEFBQGCggSAAACBAAAAAAABhISEhAQAhIS",
     "BBQUBgwGDAAAAgAAAAAGDAwWFgIYGAQA"

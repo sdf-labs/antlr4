@@ -549,11 +549,21 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 		// the precedence selects the table of dispatched decisions (the
 		// operator loops of left-recursive rules); plain decisions ignore it
 		int table = tables.tableFor(decision, getPrecedence());
+		if ( table<0 ) {
+			// this precedence class has no static table
+			return getInterpreter().adaptivePredict(_input, decision, _ctx);
+		}
 		int s = 0;
 		int i = 1;
 		while (true) {
 			int alt = tables.accept(table, s);
 			if ( alt>0 ) return alt;
+			if ( alt==StaticDFATables.ESCAPE ) {
+				// hybrid-table escape: rerun the prediction through the
+				// adaptive engine (no input was consumed, so the rescan
+				// starts clean)
+				return getInterpreter().adaptivePredict(_input, decision, _ctx);
+			}
 			int next = tables.edge(table, s, _input.LA(i));
 			if ( next<0 ) {
 				// No viable transition. If some alternative already finished

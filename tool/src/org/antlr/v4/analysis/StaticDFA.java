@@ -27,9 +27,17 @@ package org.antlr.v4.analysis;
  * -1); a lookahead token matching no edge means no viable alternative.</p>
  */
 public class StaticDFA {
+	/**
+	 * Sentinel in {@link #accepts}: an escape state of a hybrid table. The
+	 * walker stops and defers the whole prediction to
+	 * {@code adaptivePredict} (the table never consumes input, so the
+	 * rescan is trivially sound). See DecisionClassifier's HYBRID category.
+	 */
+	public static final int ESCAPE = -1;
+
 	public final int decision;
 	public final int numStates;
-	/** Predicted alternative per state; 0 = not an accept state. */
+	/** Predicted alternative per state; 0 = not an accept state; {@link #ESCAPE} = escape. */
 	public final int[] accepts;
 	/**
 	 * Error-avoidance fallback per state; 0 = none. When prediction dies at
