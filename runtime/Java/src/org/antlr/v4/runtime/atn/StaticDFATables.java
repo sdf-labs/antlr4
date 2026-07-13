@@ -146,6 +146,18 @@ public class StaticDFATables {
 	public static final int ESCAPE = -1;
 
 	/**
+	 * Is {@code decision} precedence-dispatched (per-precedence-class
+	 * tables of a left-recursive loop)? Such tables are built against the
+	 * decision rule's compatible call sites and must not be consulted when
+	 * the left-recursive rule itself is the parse entry (no caller frame):
+	 * the adaptive engine then explores every FOLLOW link from the empty
+	 * stack, a behavior the class tables deliberately prune.
+	 */
+	public boolean isPrecedenceDispatched(int decision) {
+		return decisionToTable[decision] <= -2;
+	}
+
+	/**
 	 * The table serving {@code decision}: {@code precedence} (the parser's
 	 * current precedence, i.e. the top of its precedence stack) selects the
 	 * precedence class of dispatched decisions - the operator loops of
