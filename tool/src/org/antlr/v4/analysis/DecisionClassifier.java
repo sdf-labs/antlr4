@@ -226,6 +226,23 @@ public class DecisionClassifier {
 	 */
 	protected static final int PRECPRED_TAINT = 2;
 
+	/**
+	 * Taint for configurations that, after popping through the decision
+	 * boundary of the left-recursive rule under a per-precedence-class
+	 * construction, consumed a token outside the rule's operator loop -
+	 * i.e. not at a loop-block state and without a loop-block frame in the
+	 * calling context (an operand descent). Such consumption is
+	 * "foreign": the phantom outer context eating the tokens is not an
+	 * enclosing invocation of the same loop, so the enter/exit
+	 * substitution argument (see {@link #classifyPrecedence}) does not
+	 * apply and the conflict must escape to the adaptive engine. The
+	 * genuinely context-sensitive shapes - e.g. {@code BETWEEN e AND e}
+	 * colliding with a boolean {@code AND} loop, where the phantom
+	 * consumer is a primary alternative of the rule, not its loop - are
+	 * exactly the foreign ones.
+	 */
+	protected static final int FOREIGN_CONSUME_TAINT = 8;
+
 	/** Taint for configurations whose calling context was widened. */
 	protected static final int WIDENED_TAINT = 4;
 
@@ -307,6 +324,58 @@ public class DecisionClassifier {
 	protected boolean precStartClosure;
 	/** Representative precedence of the class under construction. */
 	protected int precEvalValue;
+
+	/**
+	 * Inclusive entry-precedence bounds of the precedence class under
+	 * construction (see {@link #classifyPrecedence}). A class's table is
+	 * only ever consulted for invocations whose entry precedence lies in
+	 * this interval, and the entry precedence is exactly the precedence
+	 * argument of the invoking call site. The closure uses the bounds to
+	 * restrict decision-boundary pops to the compatible call sites: the
+	 * runtime pops with the real stack, which is always such a call site,
+	 * so the restriction prunes only phantom paths (an over-approximation
+	 * artifact), never a runtime-reachable derivation. The one exception -
+	 * invoking the left-recursive rule itself as the parse entry, where the
+	 * runtime chases every FOLLOW link from the empty stack - is handled by
+	 * the generated call site, which defers entry-frame invocations to
+	 * adaptivePredict (see the {@code isEntry} parameter of dfaPredict).
+	 */
+	protected int precClassLo, precClassHi;
+
+	/**
+	 * ATN states of the operator loop block of the left-recursive rule
+	 * under per-precedence-class construction (the star-loop entry's
+	 * iterate branch, rule-local: operand rule references contribute
+	 * their follow states, not their bodies). Token consumption at these
+	 * states - or in a rule invoked from them (a loop-block return state
+	 * in the calling context) - is "loop consumption"; everything else a
+	 * boundary-popped config consumes is foreign (see
+	 * {@link #FOREIGN_CONSUME_TAINT}).
+	 */
+	protected java.util.BitSet precLoopStates;
+
+	/**
+	 * ATN states of the precedence rule from which its stop state is
+	 * reachable by epsilon transitions alone (rule references block: a
+	 * pending operand or operator is an unmet obligation). A phantom
+	 * enclosing frame of the enter/exit substitution argument must carry
+	 * no such obligation at resolution time - a plain binary operator
+	 * loop is completable right after its operand, but a compound
+	 * alternative like {@code expr (',' expr)* '>>' expr} still owes its
+	 * {@code '>>'} after a comma operand, and there the runtime can kill
+	 * the iterate alternative with deeper lookahead and legitimately
+	 * predict exit.
+	 */
+	protected java.util.BitSet precCompletableStates;
+
+	/**
+	 * True while building the lowest precedence class (class 0). The
+	 * enter/exit substitution argument requires every operator guard of
+	 * the rule to pass at the class's entry precedences, which holds for
+	 * class 0 by construction (its upper bound is the smallest guard
+	 * constant) and for no other class.
+	 */
+	protected boolean precClassSubstitutable;
 	/** Rule index of the precedence decision under construction; -1 = none. */
 	protected int precRuleIndex = -1;
 	/** During precedence-mode construction: exact conflicts are not trusted. */
@@ -471,6 +540,55 @@ public class DecisionClassifier {
 
 		callByFollowState();
 
+		// The operator loop block: rule-local BFS along the iterate branch
+		// of the star-loop entry (transition 0); rule references contribute
+		// their follow states (operand bodies are foreign rules reached
+		// with a loop-block frame in the context instead). The exit branch
+		// (transition 1) and everything past it stay outside.
+		this.precLoopStates = new java.util.BitSet();
+		Deque<ATNState> loopWork = new ArrayDeque<ATNState>();
+		loopWork.add(s.transition(0).target);
+		ATNState loopExit = s.transition(1).target;
+		while (!loopWork.isEmpty()) {
+			ATNState st = loopWork.remove();
+			if (st == loopExit || st.ruleIndex != s.ruleIndex
+				|| st instanceof RuleStopState
+				|| precLoopStates.get(st.stateNumber)) {
+				continue;
+			}
+			precLoopStates.set(st.stateNumber);
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				loopWork.add(t instanceof RuleTransition
+					? ((RuleTransition)t).followState : t.target);
+			}
+		}
+
+		// Epsilon-completability (see precCompletableStates): fixpoint over
+		// reverse epsilon edges from the rule's stop state.
+		this.precCompletableStates = new java.util.BitSet();
+		RuleStopState stop = atn.ruleToStopState[s.ruleIndex];
+		precCompletableStates.set(stop.stateNumber);
+		boolean changed = true;
+		while (changed) {
+			changed = false;
+			for (ATNState st : atn.states) {
+				if (st == null || st.ruleIndex != s.ruleIndex
+					|| precCompletableStates.get(st.stateNumber)) {
+					continue;
+				}
+				for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+					Transition t = st.transition(i);
+					if (t.isEpsilon() && !(t instanceof RuleTransition)
+						&& precCompletableStates.get(t.target.stateNumber)) {
+						precCompletableStates.set(st.stateNumber);
+						changed = true;
+						break;
+					}
+				}
+			}
+		}
+
 		StaticDFA[] tables = new StaticDFA[reps.length];
 		StringBuilder note = new StringBuilder();
 		boolean anyTable = false;
@@ -481,6 +599,9 @@ public class DecisionClassifier {
 		try {
 			for (int c = 0; c < reps.length; c++) {
 				this.precEvalValue = reps[c];
+				this.precClassLo = reps[c];
+				this.precClassHi = c < cutoffs.length ? cutoffs[c] : Integer.MAX_VALUE;
+				this.precClassSubstitutable = c == 0;
 				Result attempt = null;
 				for (int depthBound : wideningDepths) {
 					Result a = new Result(s);
@@ -702,7 +823,7 @@ public class DecisionClassifier {
 		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
-		Set<ATNConfig> startBusy = new HashSet<ATNConfig>();
+		Set<Object> startBusy = new HashSet<Object>();
 		this.precStartClosure = precRuleIndex >= 0;
 		for (int i = 0; i < s.getNumberOfTransitions(); i++) {
 			closure(new ATNConfig(s.transition(i).target, i+1, EmptyPredictionContext.Instance),
@@ -713,6 +834,15 @@ public class DecisionClassifier {
 			start = applyPrecedenceFilter(start);
 		}
 		start = canonical(start);
+		if (precRuleIndex >= 0 && "full".equals(System.getProperty("antlr.dfa.debug"))) {
+			System.err.printf("PREC-START d=%d rep=%d [%d,%d] configs:%n",
+				s.decision, precEvalValue, precClassLo, precClassHi);
+			for (ATNConfig c : start) {
+				System.err.printf("    alt=%d rule=%s state=%d taint=%d supp=%s ctx=%s%n",
+					c.alt, g.getRule(c.state.ruleIndex).name, c.state.stateNumber,
+					c.reachesIntoOuterContext, c.isPrecedenceFilterSuppressed(), c.context);
+			}
+		}
 		stateIds.put(start, 0);
 		states.add(start);
 		edges.add(new ArrayList<Integer>());
@@ -742,16 +872,72 @@ public class DecisionClassifier {
 				Collection<BitSet> altSubsets = PredictionMode.getConflictingAltSubsets(cs);
 				boolean exact = PredictionMode.allSubsetsConflict(altSubsets)
 					&& PredictionMode.allSubsetsEqual(altSubsets);
-				boolean hardTainted = false;
+				boolean widenedTainted = false;
 				boolean anyBoundary = false;
 				boolean allBoundary = true;
 				for (ATNConfig c : cs) {
-					if ((c.reachesIntoOuterContext & HARD_TAINT) != 0) hardTainted = true;
+					if ((c.reachesIntoOuterContext & WIDENED_TAINT) != 0) widenedTainted = true;
 					if ((c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0) anyBoundary = true;
 					else allBoundary = false;
 				}
+				BitSet conflicting = PredictionMode.getAlts(altSubsets);
+
+				// Enter/exit ambiguity of a class-0 precedence loop, resolved
+				// to iterate by substitution: when the exit alternative's
+				// scanned tokens were consumed exclusively by (a phantom or
+				// real) enclosing invocation of this same operator loop - no
+				// FOREIGN_CONSUME taint - every exit derivation of a sentence
+				// maps to an iterate derivation of the same sentence (the
+				// inner loop consumes the operators instead; all guards pass
+				// at class-0 entry precedences, so the mapped derivation is
+				// legal). Exit therefore never becomes uniquely viable, and
+				// whenever the adaptive engine terminates - unique iterate,
+				// or an exact ambiguity resolved to the minimum alternative -
+				// it answers iterate. Spurious (widening-born) exit
+				// viability only adds the conflict; the resolution matches
+				// the runtime either way. Iterate viability itself must be
+				// attested by a non-widened, non-foreign config so the
+				// accept is never based on an analysis artifact alone.
+				if (precRuleIndex >= 0 && precClassSubstitutable && exact
+					&& conflicting.cardinality() == 2
+					&& conflicting.get(1) && conflicting.get(2)) {
+					boolean exitForeign = false;
+					boolean exitObligated = false;
+					boolean iterateReal = false;
+					for (ATNConfig c : cs) {
+						if (c.alt == 2) {
+							if ((c.reachesIntoOuterContext & FOREIGN_CONSUME_TAINT) != 0) {
+								exitForeign = true;
+							}
+							// every phantom same-rule frame of the exit
+							// derivation must be obligation-free: the
+							// config's own position if it is in the rule,
+							// and every same-rule return state on its
+							// context chain (deeper phantom frames)
+							if (c.state.ruleIndex == precRuleIndex
+								&& !precCompletableStates.get(c.state.stateNumber)) {
+								exitObligated = true;
+							}
+							if (hasObligatedReturn(c.context,
+									java.util.Collections.newSetFromMap(
+										new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+								exitObligated = true;
+							}
+						}
+						if (c.alt == 1 && (c.reachesIntoOuterContext
+								& (WIDENED_TAINT|FOREIGN_CONSUME_TAINT)) == 0) {
+							iterateReal = true;
+						}
+					}
+					if (!exitForeign && !exitObligated && iterateReal) {
+						res.exactAmbigConflicts.add(conflicting);
+						acceptAlts.set(d, 1);
+						continue;
+					}
+				}
+
 				// A conflict is trusted as an exact ambiguity only if it is
-				// exact, involves no over-approximated (hard-tainted)
+				// exact, involves no widened (analysis-only over-approximated)
 				// configs, and its boundary usage is uniform: either the
 				// conflict is internal to the decision's sub-language, or
 				// every config popped through the decision boundary so the
@@ -759,12 +945,17 @@ public class DecisionClassifier {
 				// identically. Mixed usage (dangling-else shape) means
 				// full-context prediction may kill the boundary-only
 				// alternative, so min-alt is not behavior-preserving.
-				// Inside precedence classes exact conflicts are never
-				// trusted: the substitution argument has not been
-				// re-established under precedence filtering.
-				boolean untrusted = hardTainted || (anyBoundary && !allBoundary)
+				// Assumed-true precedence guards (PRECPRED_TAINT) do not
+				// block trust: the runtime's own SLL closure traverses
+				// non-frame-0 precedence predicates as epsilon under exactly
+				// the same assumption, so such configs mirror the runtime
+				// rather than over-approximate it. Inside precedence classes
+				// exact conflicts are otherwise never trusted: the min-alt
+				// substitution argument has not been re-established under
+				// precedence filtering (the enter/exit rule above is the
+				// one class-mode shape where it has).
+				boolean untrusted = widenedTainted || (anyBoundary && !allBoundary)
 					|| !trustExactAmbig;
-				BitSet conflicting = PredictionMode.getAlts(altSubsets);
 				if (untrusted) res.approxConflicts.add(conflicting);
 				else if (exact) res.exactAmbigConflicts.add(conflicting);
 				else res.contextSensitiveConflicts.add(conflicting);
@@ -777,6 +968,19 @@ public class DecisionClassifier {
 					// the conflict cannot be resolved statically: defer
 					// this state to adaptivePredict
 					acceptAlts.set(d, StaticDFA.ESCAPE);
+					if (System.getProperty("antlr.dfa.debug") != null) {
+						System.err.printf("ESCAPE-CONFLICT d=%d state=%d depth=%d exact=%s hard=%s anyB=%s allB=%s trustEA=%s alts=%s%n",
+							s.decision, d, stateDepth.get(d), exact, widenedTainted,
+							anyBoundary, allBoundary, trustExactAmbig, conflicting);
+						if ("full".equals(System.getProperty("antlr.dfa.debug"))) {
+							for (ATNConfig c : cs) {
+								System.err.printf("    alt=%d rule=%s state=%d taint=%d ctx=%s%n",
+									c.alt, g.getRule(c.state.ruleIndex).name,
+									c.state.stateNumber, c.reachesIntoOuterContext,
+									c.context);
+							}
+						}
+					}
 				}
 				else if (abortOnUntrustedConflict) {
 					// not a trusted exact ambiguity: no widening level can
@@ -789,10 +993,15 @@ public class DecisionClassifier {
 			}
 
 			if (hybridMode
-				&& (stateDepth.get(d) >= hybridDepthCap || states.size() >= hybridStateCap)) {
-				// beyond the depth/size budget: don't expand, defer to
+				&& (stateDepth.get(d) >= hybridDepthCap
+					|| (states.size() >= hybridStateCap && stateDepth.get(d) >= 2))) {
+				// Beyond the depth/size budget: don't expand, defer to
 				// adaptivePredict (BFS order makes this the deep, cold
-				// frontier - the shallow hot states are already built)
+				// frontier - the shallow hot states are already built).
+				// Depth 0 and 1 are exempt from the state budget: a wide
+				// first rank (bounded by the token alphabet) must not starve
+				// its own siblings, or single-token predictions - the
+				// dynamic majority - escape on sheer decision fanout.
 				acceptAlts.set(d, StaticDFA.ESCAPE);
 				continue;
 			}
@@ -1090,14 +1299,30 @@ public class DecisionClassifier {
 		for (Map.Entry<BitSet, IntervalSet> e : classLabels.entrySet()) {
 			BitSet key = e.getKey();
 			Set<ATNConfig> succ = new LinkedHashSet<ATNConfig>();
-			Set<ATNConfig> busy = new HashSet<ATNConfig>();
+			Set<Object> busy = new HashSet<Object>();
 			for (int m = key.nextSetBit(0); m >= 0; m = key.nextSetBit(m+1)) {
 				ATNConfig c = moveConfigs.get(m);
 				if (moveIsStop.get(m)) {
 					succ.add(c);
 				}
 				else {
-					closure(new ATNConfig(c, moveTargets.get(m)), succ, busy, res, 0);
+					ATNConfig advanced = new ATNConfig(c, moveTargets.get(m));
+					if (precRuleIndex >= 0
+						&& (c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
+						&& !isLoopConsumption(c)) {
+						// boundary-popped config consuming outside the
+						// operator loop: the phantom consumer is not an
+						// enclosing invocation of this loop
+						advanced.reachesIntoOuterContext |= FOREIGN_CONSUME_TAINT;
+						if ("full".equals(System.getProperty("antlr.dfa.debug"))
+							&& (c.reachesIntoOuterContext & FOREIGN_CONSUME_TAINT) == 0) {
+							System.err.printf("FOREIGN-MARK rule=%s state=%d alt=%d taint=%d ctx=%s label=%s%n",
+								g.getRule(c.state.ruleIndex).name, c.state.stateNumber,
+								c.alt, c.reachesIntoOuterContext, c.context,
+								labels.get(m).toString(g.getVocabulary()));
+						}
+					}
+					closure(advanced, succ, busy, res, 0);
 				}
 			}
 			succ = canonical(succ);
@@ -1134,8 +1359,22 @@ public class DecisionClassifier {
 	 * and a predicate reached that way belongs to a phantom frame, never to
 	 * frame 0.</p>
 	 */
-	protected void closure(ATNConfig config, Set<ATNConfig> configs, Set<ATNConfig> busy, Result res, int depth) {
-		if (!busy.add(config)) return;
+	protected void closure(ATNConfig config, Set<ATNConfig> configs, Set<Object> busy, Result res, int depth) {
+		// The busy key must distinguish pre- from post-boundary lineage
+		// (ATNConfig equality ignores taint): under per-precedence-class
+		// construction the decision rule's stop state is chased with the
+		// class's call-site filter from the decision's own frame
+		// (depth >= 0) but unfiltered from phantom enclosing frames
+		// (depth < 0). An identical (state, alt, ctx) key arriving first
+		// via the filtered pop must not swallow the later unfiltered one -
+		// that dedup once dropped the "exit two loops, BETWEEN takes the
+		// AND" derivations. The runtime has no such filter, so its
+		// first-arrival closure is always complete and its closureBusy
+		// key needs no lineage bit.
+		if (!busy.add(depth >= 0 ? (Object)config
+				: (Object)new java.util.AbstractMap.SimpleEntry<ATNConfig, Boolean>(config, Boolean.TRUE))) {
+			return;
+		}
 		ATNState p = config.state;
 
 		if (p instanceof RuleStopState) {
@@ -1242,6 +1481,27 @@ public class DecisionClassifier {
 				closure(new ATNConfig(config, t.target), configs, busy, res, depth);
 			}
 			else if (t.isEpsilon()) {
+				if (boundaryChase && precRuleIndex >= 0 && p.ruleIndex == precRuleIndex
+					&& depth >= 0) {
+					// Popping the decision boundary of the precedence rule
+					// under a per-class construction - from the decision's
+					// own frame (depth >= 0, first pop): only call sites
+					// whose precedence argument lies in the class interval
+					// can be the invocation this table serves (see
+					// precClassLo). FOLLOW links to incompatible call sites
+					// are phantom paths the runtime (with its real stack)
+					// never takes. Later same-rule stops (depth < 0) belong
+					// to phantom *enclosing* invocations of arbitrary entry
+					// precedence and must chase every call site: filtering
+					// them by this class's interval once dropped the real
+					// "exit two loops, let BETWEEN take the AND" derivations
+					// and misparsed FRAME BETWEEN a OR b AND c AND d.
+					RuleTransition call = callByFollowState().get(t.target.stateNumber);
+					if (call != null && call.target.ruleIndex == precRuleIndex
+						&& (call.precedence < precClassLo || call.precedence > precClassHi)) {
+						continue;
+					}
+				}
 				ATNConfig c2 = new ATNConfig(config, t.target);
 				int newDepth = depth;
 				if (boundaryChase) {
@@ -1265,6 +1525,51 @@ public class DecisionClassifier {
 				closure(c2, configs, busy, res, newDepth);
 			}
 		}
+	}
+
+	/**
+	 * Is a token consumption by this (boundary-popped) config attributable
+	 * to the operator loop of the precedence rule under construction -
+	 * directly (at a loop-block state) or as an operand descent (a
+	 * loop-block return state somewhere in the calling context)?
+	 */
+	protected boolean isLoopConsumption(ATNConfig c) {
+		if (precLoopStates.get(c.state.stateNumber)) return true;
+		return hasLoopReturn(c.context,
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()));
+	}
+
+	/**
+	 * Does the context chain contain a same-rule return state that is not
+	 * epsilon-completable - a phantom frame of the precedence rule with an
+	 * unmet obligation (see {@link #precCompletableStates})?
+	 */
+	private boolean hasObligatedReturn(PredictionContext ctx, Set<PredictionContext> visited) {
+		if (ctx == null || ctx.isEmpty() || !visited.add(ctx)) return false;
+		for (int i = 0; i < ctx.size(); i++) {
+			int rs = ctx.getReturnState(i);
+			if (rs != PredictionContext.EMPTY_RETURN_STATE) {
+				ATNState st = atn.states.get(rs);
+				if (st.ruleIndex == precRuleIndex
+					&& !precCompletableStates.get(rs)) {
+					return true;
+				}
+				if (hasObligatedReturn(ctx.getParent(i), visited)) return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean hasLoopReturn(PredictionContext ctx, Set<PredictionContext> visited) {
+		if (ctx == null || ctx.isEmpty() || !visited.add(ctx)) return false;
+		for (int i = 0; i < ctx.size(); i++) {
+			int rs = ctx.getReturnState(i);
+			if (rs != PredictionContext.EMPTY_RETURN_STATE) {
+				if (precLoopStates.get(rs)) return true;
+				if (hasLoopReturn(ctx.getParent(i), visited)) return true;
+			}
+		}
+		return false;
 	}
 
 	/** Does a return state appear anywhere in a (possibly DAG-shaped) context? */

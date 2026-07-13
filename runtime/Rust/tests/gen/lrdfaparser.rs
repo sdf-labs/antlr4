@@ -1509,16 +1509,16 @@ where
 //   decision 2: precedence-dispatched over cutoffs [3, 4, 5, 6, 8, 9], tables [1 2 3 4 5 6 7]
 //   decision 1: LL(k), k=1, 7 states
 //   table 1 (decision 2): LL(k), k=1, 8 states
-//   table 2 (decision 2): LL(k), k=1, 8 states
+//   table 2 (decision 2): LL(k), k=1, 5 states
 //   table 3 (decision 2): LL(k), k=1, 9 states
-//   table 4 (decision 2): LL(k), k=1, 9 states
+//   table 4 (decision 2): LL(k), k=1, 5 states
 //   table 5 (decision 2): LL(k), k=1, 8 states
-//   table 6 (decision 2): LL(k), k=1, 7 states
+//   table 6 (decision 2): LL(k), k=1, 3 states
 //   table 7 (decision 2): LL(k), k=0, 1 states
 static ATN_SIMULATOR_MANAGER: LazyLock<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));
 static _ATN: LazyLock<ATN> =
     LazyLock::new(|| ATNDeserializer::new(None).deserialize_compact(&_serializedATN));
-static _serializedATN: [&'static str; 13] = [
+static _serializedATN: [&'static str; 12] = [
     "CAIaVAQADgAEAg4CAgACAAIAAgICAgICAgICAgYCGhACAgICAgICAgICAgICAgICAgICAgICAgICAgIC",
     "AgICAgICAgICAgICAgICAgIKAkoQAhQCGAJQEgICAgACBAQABAAEAgAMDgQACAgQEF4ACAIAAAAEGAIA",
     "AAAICgYEAgAKDAoAAAIMAgIAAAAOEAwCAQAQEgoIAAASGgYEAg4UGgoWAAAWGgoYAAAYDgIAAAAYFAIA",
@@ -1527,9 +1527,8 @@ static _serializedATN: [&'static str; 13] = [
     "AgBAQgoEAABCSgIAAABERhQQAABGSgoGAABIHAIAAABIIgIAAABIKAIAAABILgIAAABIOgIAAABIRAIA",
     "AABKUAIAAABMSAIAAABMTgIAAABOBgIAAABQTAIAAAAGGEhMChAGAg4qAAoMBgIECAAAAAAAAAAAKioq",
     "KioqKgICAgYGBAgIBgoKCAwOChAQBhISDAEQKgAEAgQCAgIEBAAAAAAAAAAAKioqKioqKioBAQICAgQE",
-    "BAYGBggIEAoSEgwUFA4BECoABAIEAgIEBAQAAAAAAAAAACoqKioqKioqAQECAgIEBAQGBgYICBAKEhIM",
-    "FBQOARI2AAQCBAIEAgQEBAAAAAAAAAAAADY2NjY2NjY2NgEBAgICBAQEBgYGCAgICgoODBAQChISDhQU",
-    "EAESNgAEAgQCBAIEBAQAAAAAAAAAAAA2NjY2NjY2NjYBAQICAgQEBAYGBggICAoKCgwMEAoSEg4UFBAB",
-    "ECoABAIEAgQEBAQAAAAAAAAAACoqKioqKioqAQECAgIEBAQGBgYICBAKEhIMFBQOAQ4kAAQCBAQEBAQA",
-    "AAAAAAAAJCQkJCQkJAEBAgICBAQGBggQCBISChQUDAECAAQAAAACBAwGCAoMEBICBAYICgwO"
+    "BAYGBggIEAoSEgwUFA4BChgABAICAgQAAAAAABgYGBgYAQECAgIEBgYGCBAIARI2AAQCBAIEAgQEBAAA",
+    "AAAAAAAAADY2NjY2NjY2NgEBAgICBAQEBgYGCAgICgoODBAQChISDhQUEAEKGAAEAgICBAAAAAAAGBgY",
+    "GBgBAQICAgQGBgYKCggBECoABAIEAgQEBAQAAAAAAAAAACoqKioqKioqAQECAgIEBAQGBgYICBAKEhIM",
+    "FBQOAQYMAAQCBAAAAAwMDAEBAgICBAECAAQAAAACBAwGCAoMEBICBAYICgwO"
 ];

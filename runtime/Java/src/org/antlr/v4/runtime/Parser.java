@@ -546,6 +546,14 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 	public int dfaPredict(StaticDFATables tables, int decision)
 		throws RecognitionException
 	{
+		if ( tables.isPrecedenceDispatched(decision) && _ctx.getParent()==null ) {
+			// The left-recursive rule is itself the parse entry (no caller
+			// frame): per-precedence-class tables are built against the
+			// rule's compatible call sites, but an entry invocation pops
+			// into the grammar-wide FOLLOW space instead - only the
+			// adaptive engine models that.
+			return getInterpreter().adaptivePredict(_input, decision, _ctx);
+		}
 		// the precedence selects the table of dispatched decisions (the
 		// operator loops of left-recursive rules); plain decisions ignore it
 		int table = tables.tableFor(decision, getPrecedence());

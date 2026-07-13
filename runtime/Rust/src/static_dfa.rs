@@ -183,6 +183,17 @@ impl StaticDFATables {
         }
     }
 
+    /// Is the decision precedence-dispatched (per-precedence-class tables
+    /// of a left-recursive loop)? Such tables are built against the
+    /// decision rule's compatible call sites and must not be consulted
+    /// when the left-recursive rule itself is the parse entry (no caller
+    /// frame): the adaptive engine then explores every FOLLOW link from
+    /// the empty stack, a behavior the class tables deliberately prune.
+    #[inline]
+    pub fn is_precedence_dispatched(&self, decision: i32) -> bool {
+        self.decision_to_table[decision as usize] <= -2
+    }
+
     /// The table for a decision; `precedence` (the parser's current
     /// precedence, i.e. the top of its precedence stack) selects the
     /// precedence class of dispatched decisions and is ignored for plain

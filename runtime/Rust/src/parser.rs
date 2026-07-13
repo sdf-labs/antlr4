@@ -484,17 +484,33 @@ where
     /// consumes input). A lookahead token matching no table edge produces a
     /// `NoViableAlt` error anchored at the decision start token, matching
     /// `adaptive_predict`'s convention.
+    /// Diagnostic escape tracing for `dfa_predict` (`ANTLR_DFA_TRACE=1`):
+    /// logs every prediction the static tables defer to the adaptive
+    /// engine, the tool for finding which decisions a given input keeps
+    /// escaping on. Checked once per process.
+    fn dfa_trace() -> bool {
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *TRACE.get_or_init(|| std::env::var_os("ANTLR_DFA_TRACE").is_some())
+    }
+
     pub fn dfa_predict(&mut self, decision: i32) -> Result<i32, ANTLRError> {
         // the precedence selects the table of dispatched decisions (the
         // operator loops of left-recursive rules); plain decisions ignore it
         let precedence = self.get_precedence();
-        let Some(dfa) = self
-            .atn_manager
-            .atn()
-            .static_dfas
-            .table(decision, precedence)
-        else {
+        let static_dfas = &self.atn_manager.atn().static_dfas;
+        if static_dfas.is_precedence_dispatched(decision) && self.parent_ctx().is_none() {
+            // The left-recursive rule is itself the parse entry (no caller
+            // frame): per-precedence-class tables are built against the
+            // rule's compatible call sites, but an entry invocation pops
+            // into the grammar-wide FOLLOW space instead - only the
+            // adaptive engine models that.
+            return Ok(crate::atn::INVALID_ALT);
+        }
+        let Some(dfa) = static_dfas.table(decision, precedence) else {
             // this precedence class has no static table
+            if Self::dfa_trace() {
+                eprintln!("DFA-TRACE no-table d={} prec={}", decision, precedence);
+            }
             return Ok(crate::atn::INVALID_ALT);
         };
         let mut s = 0usize;
@@ -504,6 +520,16 @@ where
                 // hybrid-table escape: the caller reruns the prediction
                 // through the adaptive engine (no input was consumed, so
                 // the rescan starts clean)
+                if Self::dfa_trace() {
+                    eprintln!(
+                        "DFA-TRACE escape d={} prec={} state={} depth={} la1={}",
+                        decision,
+                        precedence,
+                        s,
+                        i - 1,
+                        self.input.la(1)
+                    );
+                }
                 return Ok(crate::atn::INVALID_ALT);
             }
             if let Some(alt) = dfa.accept(s) {
