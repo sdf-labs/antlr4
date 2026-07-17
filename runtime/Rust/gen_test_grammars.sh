@@ -16,6 +16,7 @@ declare -a GRAMMARS=(
     "StaticDFA"
     "LrDfa"
     "FuzzExpr"
+    "BetweenExpr"
 #    "FHIRPath"
 )
 
@@ -27,6 +28,7 @@ declare -a ADDITIONAL_ARGS=(
     ""
     ""
     ""
+    "-Xstatic-dfa"
     "-Xstatic-dfa"
     "-Xstatic-dfa"
     "-Xstatic-dfa"
@@ -52,3 +54,9 @@ done
 echo "Generating: FuzzExpr (adaptive twin)"
 (cd "$SCRIPT_DIR/grammars" && java -cp "$ANTLR_PATH" org.antlr.v4.Tool -Dlanguage=Rust \
     -o ../tests/gen/adaptive FuzzExpr.g4)
+
+# Same differential twin for the BETWEEN-collision grammar
+# (tests/between_differential_tests.rs).
+echo "Generating: BetweenExpr (adaptive twin)"
+(cd "$SCRIPT_DIR/grammars" && java -cp "$ANTLR_PATH" org.antlr.v4.Tool -Dlanguage=Rust \
+    -o ../tests/gen/adaptive BetweenExpr.g4)
