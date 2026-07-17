@@ -47,4 +47,13 @@ public class PrecedenceStaticDFA {
 		this.cutoffs = cutoffs;
 		this.tables = tables;
 	}
+
+	/** True if any precedence class has no table (dispatches to
+	 *  {@code adaptivePredict}) or has a table with escape states. */
+	public boolean hasFallbacks() {
+		for (StaticDFA t : tables) {
+			if (t == null || t.hasEscapes()) return true;
+		}
+		return false;
+	}
 }

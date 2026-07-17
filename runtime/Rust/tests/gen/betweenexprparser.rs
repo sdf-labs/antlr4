@@ -889,7 +889,7 @@ where
 					{
 					recog.base.set_state(28);
 					recog.err_handler.sync(&mut recog.base)?;
-					match { let _sdp = recog.base.dfa_predict(2)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(2,&mut recog.base)? } else { _sdp } } {
+					match { let _sdp = recog.base.dfa_predict(2)?; _sdp } {
 						1 =>{
 							{
 							/*recRuleLabeledAltStartAction*/
@@ -1432,7 +1432,7 @@ where
 					{
 					recog.base.set_state(54);
 					recog.err_handler.sync(&mut recog.base)?;
-					match { let _sdp = recog.base.dfa_predict(6)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(6,&mut recog.base)? } else { _sdp } } {
+					match { let _sdp = recog.base.dfa_predict(6)?; _sdp } {
 						1 =>{
 							{
 							/*recRuleAltStartAction*/
@@ -1606,7 +1606,7 @@ where
 		let result: Result<(), ANTLRError> = (|| {
 			recog.base.set_state(68);
 			recog.err_handler.sync(&mut recog.base)?;
-			match { let _sdp = recog.base.dfa_predict(8)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(8,&mut recog.base)? } else { _sdp } } {
+			match { let _sdp = recog.base.dfa_predict(8)?; _sdp } {
 				1 =>{
 					/*------- Outer Most Alt 1 -------*/
 					unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
