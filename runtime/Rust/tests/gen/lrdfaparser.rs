@@ -1341,7 +1341,7 @@ where
 					{
 					recog.base.set_state(36);
 					recog.err_handler.sync(&mut recog.base)?;
-					match { let _sdp = recog.base.dfa_predict(1)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(1,&mut recog.base)? } else { _sdp } } {
+					match { let _sdp = recog.base.dfa_predict(1)?; _sdp } {
 						1 =>{
 							{
 							/*recRuleLabeledAltStartAction*/

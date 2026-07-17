@@ -35,6 +35,15 @@ public class StaticDFA {
 	 */
 	public static final int ESCAPE = -1;
 
+	/** True if any state of this table is an escape state: a runtime
+	 *  prediction driven by it can defer to {@code adaptivePredict}. */
+	public boolean hasEscapes() {
+		for (int a : accepts) {
+			if (a == ESCAPE) return true;
+		}
+		return false;
+	}
+
 	public final int decision;
 	public final int numStates;
 	/** Predicted alternative per state; 0 = not an accept state; {@link #ESCAPE} = escape. */

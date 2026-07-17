@@ -205,6 +205,7 @@ public class ParserFactory extends DefaultOutputModelFactory {
 		}
 		else if ( hasStaticDFA(decision) ) {
 			c = new DFAAltBlock(this, blkAST, alts);
+			c.tableCanDefer = staticDFACanDefer(decision);
 		}
 		else {
 			c = getComplexChoiceBlock(blkAST, alts);
@@ -244,7 +245,7 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			}
 
 			if ( hasStaticDFA(decision) ) {
-				return getDFAEBNFBlock(ebnfRoot, alts);
+				return getDFAEBNFBlock(ebnfRoot, alts, decision);
 			}
 		}
 
@@ -261,8 +262,28 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			|| (g.staticPrecedenceDFAs!=null && g.staticPrecedenceDFAs.containsKey(decision));
 	}
 
+	/**
+	 * Can the static table of the given decision defer a prediction to
+	 * adaptivePredict at runtime? Only reachable for decisions with
+	 * {@link #hasStaticDFA}; call sites of decisions where this is false
+	 * need no adaptive fallback wrapper. True for every precedence-
+	 * dispatched decision: beyond escape states and table-less classes,
+	 * the runtime defers them whenever the left-recursive rule itself is
+	 * the parse entry (per-class tables are built against the rule's call
+	 * sites, which an entry invocation doesn't have).
+	 */
+	protected boolean staticDFACanDefer(int decision) {
+		if ( g.staticPrecedenceDFAs != null
+			&& g.staticPrecedenceDFAs.containsKey(decision) ) {
+			return true;
+		}
+		org.antlr.v4.analysis.StaticDFA dfa =
+			g.staticDecisionDFAs != null ? g.staticDecisionDFAs.get(decision) : null;
+		return dfa != null && dfa.hasEscapes();
+	}
+
 	/** Like getComplexEBNFBlock but driving the decision from a static DFA table. */
-	protected Choice getDFAEBNFBlock(GrammarAST ebnfRoot, List<CodeBlockForAlt> alts) {
+	protected Choice getDFAEBNFBlock(GrammarAST ebnfRoot, List<CodeBlockForAlt> alts, int decision) {
 		int ebnf = 0;
 		if ( ebnfRoot!=null ) ebnf = ebnfRoot.getType();
 		Choice c = null;
@@ -276,6 +297,9 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			case ANTLRParser.POSITIVE_CLOSURE :
 				c = new DFAPlusBlock(this, ebnfRoot, alts);
 				break;
+		}
+		if ( c != null ) {
+			c.tableCanDefer = staticDFACanDefer(decision);
 		}
 		return c;
 	}

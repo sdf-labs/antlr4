@@ -31,6 +31,13 @@ import java.util.List;
  */
 public abstract class Choice extends RuleElement {
 	public int decision = -1;
+	/**
+	 * For table-driven (DFA*) choices: can the static table defer a
+	 * prediction to adaptivePredict at runtime (escape states or
+	 * table-less precedence classes)? When false the generated call site
+	 * skips the adaptive fallback wrapper - it would be dead code.
+	 */
+	public boolean tableCanDefer;
 	public Decl label;
 
 	@ModelElement public List<CodeBlockForAlt> alts;
