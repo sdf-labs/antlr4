@@ -1677,7 +1677,7 @@ where
 //   decision 2: LL(k), k=1, 3 states
 //   decision 6: LL(k), k=1, 3 states
 //   decision 8: LL(k), k=2, 13 states
-//   table 4 (decision 3): LL(k), k=1, 9 states, 2 adaptive escapes
+//   table 4 (decision 3): LL(k), k=1, 9 states, 1 adaptive escapes
 //   table 5 (decision 3): LL(k), k=1, 9 states, 1 adaptive escapes
 //   table 6 (decision 3): LL(k), k=0, 1 states
 //   table 7 (decision 7): LL(k), k=1, 9 states
@@ -1700,7 +1700,7 @@ static _serializedATN: [&'static str; 19] = [
     "ODxEVmxwiAEKEhIAEjAABAEEBAEBBAQEAAAAAAAAAAAAMDAwMDAwMDAwAQECAgIEBAQGBgYICAgKCg4M",
     "EBYOGhoQBAYMAAIEAAAAAAwMDAQEAgYGBAwGDAACBAAAAAAMDAwQEgIUFgQQGkgABgAEAgICAgICAgII",
     "AAACAAAAAAAAAAAAAAASEkhISEhISEhISEhIGBgCHh4EICAGAQEIAgIKBAQMBgYOCAgQCg4SEBYUGhoW",
-    "HBwYARIwAAQEAQEEBAQEBAAAAAAAAAAAADAwMDAwMDAwMAEBAgICBAQEBgYGCAgICgoODBAWDhoaEAES",
+    "HBwYARIwAAQEAQIEBAQEBAAAAAAAAAAAADAwMDAwMDAwMAEBAgICBAQEBgYGCAgICgoODBAWDhoaEAES",
     "MAAEBAEEBAQEBAQAAAAAAAAAAAAwMDAwMDAwMDABAQICAgQEBAYGBggICAoKDgwQFg4aGhABAgAEAAAA",
     "ARIwAAQEBAQEBAIEBAAAAAAAAAAAADAwMDAwMDAwMAEBAgICBAQEBgYGCAgICgoODBAWDhoaEAEUNgAE",
     "BAQEBAQBBAQEAAAAAAAAAAAAADY2NjY2NjY2NjYBAQICAgQEBAYGBggICAoKDgwQEg4UFhAaGhIEBgQC",
