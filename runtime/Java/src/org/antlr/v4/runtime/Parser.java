@@ -570,6 +570,9 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 				// hybrid-table escape: rerun the prediction through the
 				// adaptive engine (no input was consumed, so the rescan
 				// starts clean)
+				if ( System.getProperty("antlr.dfa.trace") != null ) {
+					System.err.println("DFA-TRACE escape d="+decision+" prec="+getPrecedence()+" state="+s+" la1="+_input.LA(1));
+				}
 				return getInterpreter().adaptivePredict(_input, decision, _ctx);
 			}
 			int next = tables.edge(table, s, _input.LA(i));
