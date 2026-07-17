@@ -161,6 +161,9 @@ public class DecisionClassifier {
 		public String precNote;
 		/** For HYBRID tables: number of escape states. */
 		public int escapes;
+		/** For LR_PRECEDENCE decisions: precedence classes without a table
+		 *  (their dispatch entry defers to adaptivePredict). */
+		public int adaptiveClasses;
 		/**
 		 * For HYBRID tables: fraction of the start state's outgoing token
 		 * space whose successor subgraph contains at least one accept
@@ -735,6 +738,7 @@ public class DecisionClassifier {
 					: c < cutoffs.length ? "=" + (cutoffs[c-1]+1) + ".." + cutoffs[c]
 					: ">" + cutoffs[cutoffs.length-1]).append(':');
 				if (attempt.dfa == null) {
+					res.adaptiveClasses++;
 					if (attempt.category == Category.HYBRID) {
 						// hybrid construction worked but fell below the
 						// coverage floor; the class stays adaptive
@@ -1942,6 +1946,36 @@ public class DecisionClassifier {
 			if (r.precDfa != null) precStatic++;
 		}
 
+		// Runtime adaptivePredict fallback accounting: the table categories
+		// alone are deceptive - a "static" decision may still carry hybrid
+		// escape states or adaptive precedence classes that hand individual
+		// predictions back to the adaptive engine at runtime.
+		int fbStaticOnly = 0, fbEscapeStates = 0, fbHybridDecisions = 0;
+		int fbAdaptiveClasses = 0, fbAdaptiveOnly = 0;
+		for (Result r : results) {
+			if (r.category == Category.LR_PRECEDENCE) {
+				if (r.precDfa == null) {
+					fbAdaptiveOnly++;
+				}
+				else {
+					fbEscapeStates += r.escapes;
+					fbAdaptiveClasses += r.adaptiveClasses;
+					if (r.escapes > 0) fbHybridDecisions++;
+					else if (r.adaptiveClasses == 0) fbStaticOnly++;
+				}
+			}
+			else if (r.category == Category.LL1 || (r.dfa != null && r.escapes == 0)) {
+				fbStaticOnly++;
+			}
+			else if (r.dfa == null) {
+				fbAdaptiveOnly++;
+			}
+			else {
+				fbHybridDecisions++;
+				fbEscapeStates += r.escapes;
+			}
+		}
+
 		StringBuilder buf = new StringBuilder();
 		buf.append("=== decision report: grammar ").append(g.name)
 		   .append(" (").append(results.size()).append(" decisions) ===\n");
@@ -1955,6 +1989,11 @@ public class DecisionClassifier {
 			}
 		}
 		buf.append('\n');
+		buf.append(String.format(
+			"fallbacks: static-only=%d/%d; escape-states=%d across %d hybrid decisions"
+				+ " + %d adaptive precedence classes; adaptive-only decisions=%d%n",
+			fbStaticOnly, results.size(), fbEscapeStates, fbHybridDecisions,
+			fbAdaptiveClasses, fbAdaptiveOnly));
 
 		int maxKAnyAcyclic = 0;
 		int maxKLLK = 0;
@@ -1967,7 +2006,8 @@ public class DecisionClassifier {
 					buf.append(String.format("%-22s d=%-4d %-17s", lrRule.name,
 						r.decisionState.decision, r.category));
 					buf.append(' ').append(r.precNote)
-					   .append(r.precDfa != null ? " [static]" : " [adaptive]").append('\n');
+					   .append(r.precDfa != null ? " [static]" : " [adaptive]")
+					   .append(" fb=").append(fbString(r)).append('\n');
 				}
 				continue;
 			}
@@ -1978,6 +2018,7 @@ public class DecisionClassifier {
 			}
 			Rule rule = g.getRule(r.decisionState.ruleIndex);
 			buf.append(String.format("%-22s d=%-4d %-17s", rule.name, r.decisionState.decision, r.category));
+			buf.append(" fb=").append(fbString(r));
 			if (r.k >= 0) buf.append(" k=").append(r.k);
 			buf.append(" dfaStates=").append(r.numDfaStates);
 			if (r.category == Category.HYBRID) {
@@ -2005,6 +2046,32 @@ public class DecisionClassifier {
 		buf.append("max k: LLK=").append(maxKLLK)
 		   .append(", any acyclic non-LL(1) (incl. conflicted)=").append(maxKAnyAcyclic).append('\n');
 		return buf.toString();
+	}
+
+	/**
+	 * Runtime-fallback descriptor of a decision: "0" when no prediction of
+	 * this decision can reach adaptivePredict (pure LL(1) code or a
+	 * complete static table); "all" when the decision has no table at all
+	 * (fully adaptive); otherwise the number of table states that defer to
+	 * the adaptive engine - escape states of a hybrid table ("N"), and for
+	 * precedence-dispatched decisions escape states plus classes without
+	 * tables ("Ne+Mc").
+	 */
+	private static String fbString(Result r) {
+		if (r.category == Category.LR_PRECEDENCE) {
+			if (r.precDfa == null) return "all";
+			if (r.escapes == 0 && r.adaptiveClasses == 0) return "0";
+			StringBuilder s = new StringBuilder();
+			if (r.escapes > 0) s.append(r.escapes).append('e');
+			if (r.adaptiveClasses > 0) {
+				if (s.length() > 0) s.append('+');
+				s.append(r.adaptiveClasses).append('c');
+			}
+			return s.toString();
+		}
+		if (r.category == Category.LL1) return "0";
+		if (r.dfa == null) return "all";
+		return r.escapes > 0 ? String.valueOf(r.escapes) : "0";
 	}
 
 	private static Set<BitSet> distinct(List<BitSet> sets) {

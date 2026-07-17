@@ -139,7 +139,7 @@ public class Tool {
 		new Option("force_atn",                   "-Xforce-atn", "use the ATN simulator for all predictions"),
 		new Option("log",                         "-Xlog", "dump lots of logging info to antlr-timestamp.log"),
 	    new Option("exact_output_dir",            "-Xexact-output-dir", "all output goes into -o dir regardless of paths/package"),
-	    new Option("decision_report",             "-Xdecision-report", "classify every parser decision by required static lookahead (LL(1)/LL(k)/LL(*)/ambiguous/context-sensitive) and print a report"),
+	    new Option("decision_report",             "-Xdecision-report", "classify every parser decision by required static lookahead (LL(1)/LL(k)/LL(*)/ambiguous/context-sensitive) and print a report with a per-decision adaptivePredict-fallback (fb) breakout"),
 	    new Option("static_dfa",                  "-Xstatic-dfa", "precompute SLL prediction DFAs and generate table-driven prediction instead of adaptivePredict where provably behavior-preserving (Java/Rust targets)"),
 	};
 
