@@ -610,15 +610,16 @@ public class DecisionClassifier {
 				}
 			}
 		}
-		// Pending-token states: can reach a token match by epsilon without
-		// passing through the loop decision - i.e., the token is owed by
-		// the current alternative, not by the next loop iteration (whose
-		// operators are reached only via the decision). Computed as the
-		// reverse-epsilon closure of token-obligated states, blocked at
-		// the decision state. A phantom frame at such a position owes
-		// something the iterate reading does not (Send's list element
-		// returns into a pending ','/'>>'); a frame blocked only by the
-		// decision owes exactly the next operator, which iterate owes too.
+		// Pending-token states: positions that CANNOT reach the loop
+		// decision by epsilon alone - every continuation owes a token of
+		// the current alternative. The complement set (states that skip
+		// to the decision freely) owes nothing: an optional trailing
+		// token like the '(+)'? of Duckdb's valueExpression base
+		// alternative is not an obligation, but Send's '>>' is - the
+		// list-star exit of expr (',' expr)* '>>' expr cannot proceed
+		// without it. A phantom frame at a pending position has no
+		// iterate-side counterpart (the veto stands); a frame that can
+		// skip owes exactly the next operator, which iterate owes too.
 		List<List<ATNState>> reverseEps = new ArrayList<List<ATNState>>(atn.states.size());
 		for (int i = 0; i < atn.states.size(); i++) reverseEps.add(new ArrayList<ATNState>());
 		for (ATNState st : atn.states) {
@@ -631,26 +632,27 @@ public class DecisionClassifier {
 				}
 			}
 		}
-		this.precPendingStates = new java.util.BitSet();
-		Deque<ATNState> pendingWork = new ArrayDeque<ATNState>();
-		for (int i = precTokenObligatedStates.nextSetBit(0); i >= 0;
-			 i = precTokenObligatedStates.nextSetBit(i+1)) {
-			if (!precPendingStates.get(i)) {
-				precPendingStates.set(i);
-				pendingWork.add(atn.states.get(i));
-			}
-		}
-		while (!pendingWork.isEmpty()) {
-			ATNState st = pendingWork.remove();
-			if (st == s) continue; // do not propagate past the decision
-			for (ATNState pred : reverseEps.get(st.stateNumber)) {
-				if (!precPendingStates.get(pred.stateNumber)) {
-					precPendingStates.set(pred.stateNumber);
-					pendingWork.add(pred);
+		java.util.BitSet epsSkip = new java.util.BitSet();
+		Deque<ATNState> skipWork = new ArrayDeque<ATNState>();
+		epsSkip.set(s.stateNumber);
+		skipWork.add(s);
+		while (!skipWork.isEmpty()) {
+			ATNState cur = skipWork.remove();
+			for (ATNState pred : reverseEps.get(cur.stateNumber)) {
+				if (!epsSkip.get(pred.stateNumber)) {
+					epsSkip.set(pred.stateNumber);
+					skipWork.add(pred);
 				}
 			}
 		}
-		precPendingStates.clear(s.stateNumber);
+		this.precPendingStates = new java.util.BitSet();
+		for (ATNState st : atn.states) {
+			if (st != null && st.ruleIndex == s.ruleIndex
+				&& !(st instanceof RuleStopState)
+				&& !epsSkip.get(st.stateNumber)) {
+				precPendingStates.set(st.stateNumber);
+			}
+		}
 
 		// Simplicity of the guarded alternatives (see precSimpleLoop):
 		// walk each precedence-guarded alternative's continuation.
