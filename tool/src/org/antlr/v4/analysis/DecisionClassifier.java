@@ -381,11 +381,20 @@ public class DecisionClassifier {
 	protected java.util.BitSet precPendingStates;
 
 	/**
-	 * True while building the lowest precedence class (class 0). The
-	 * enter/exit substitution argument requires every operator guard of
-	 * the rule to pass at the class's entry precedences, which holds for
-	 * class 0 by construction (its upper bound is the smallest guard
-	 * constant) and for no other class.
+	 * True while building any precedence class in which the enter/exit
+	 * substitution may fire. The substitution maps an exit derivation
+	 * (an enclosing frame of the same loop consumes the operator) onto
+	 * an iterate derivation of the same sentence. The mapping requires
+	 * the operator's guard to pass at the inner precedence - which the
+	 * conflict itself attests: iterate is viable on the shared lookahead
+	 * prefix only when an enabled alternative consumes it. Precedence
+	 * gaps between the outer frame and the inner class do not matter:
+	 * the iterate lineage can always take the free loop-exit and rejoin
+	 * exactly the caller continuation the exit lineage heads for, so
+	 * exit never becomes uniquely viable in any class. The substitution
+	 * is therefore no longer restricted to class 0; the load-bearing
+	 * conditions are the per-conflict vetoes (foreign consumption,
+	 * pending obligations, attested real iterate).
 	 */
 	protected boolean precClassSubstitutable;
 
@@ -710,7 +719,7 @@ public class DecisionClassifier {
 				this.precEvalValue = reps[c];
 				this.precClassLo = reps[c];
 				this.precClassHi = c < cutoffs.length ? cutoffs[c] : Integer.MAX_VALUE;
-				this.precClassSubstitutable = c == 0;
+				this.precClassSubstitutable = true;
 				Result attempt = null;
 				for (int depthBound : wideningDepths) {
 					Result a = new Result(s);
@@ -993,23 +1002,36 @@ public class DecisionClassifier {
 				}
 				BitSet conflicting = PredictionMode.getAlts(altSubsets);
 
-				// Enter/exit ambiguity of a class-0 precedence loop, resolved
-				// to iterate by substitution: when the exit alternative's
+				// Enter/exit ambiguity of a precedence loop, resolved to
+				// iterate by substitution: when the exit alternative's
 				// scanned tokens were consumed exclusively by (a phantom or
 				// real) enclosing invocation of this same operator loop - no
 				// FOREIGN_CONSUME taint - every exit derivation of a sentence
-				// maps to an iterate derivation of the same sentence (the
-				// inner loop consumes the operators instead; all guards pass
-				// at class-0 entry precedences, so the mapped derivation is
-				// legal). Exit therefore never becomes uniquely viable, and
-				// whenever the adaptive engine terminates - unique iterate,
-				// or an exact ambiguity resolved to the minimum alternative -
-				// it answers iterate. Spurious (widening-born) exit
+				// maps to an iterate derivation of the same sentence. The
+				// mapping is precedence-safe: the outer reading consumes the
+				// operator through the same loop alternative (same guard,
+				// same operand precedence), and the iterate lineage can
+				// always take the loop-exit epsilon and rejoin exactly the
+				// caller continuation the exit lineage heads for - so
+				// whenever exit is viable, iterate is viable too. Exit
+				// therefore never becomes uniquely viable, and whenever the
+				// adaptive engine terminates - unique iterate, or an
+				// ambiguity resolved to the minimum alternative - it answers
+				// iterate. Spurious (widening-born, or phantom-only) exit
 				// viability only adds the conflict; the resolution matches
-				// the runtime either way. Iterate viability itself must be
+				// the runtime either way. This holds in every precedence
+				// class, not just class 0: within a class, iterate viability
+				// already attests that the operator's guard passes at the
+				// current precedence. Iterate viability itself must be
 				// attested by a non-widened, non-foreign config so the
 				// accept is never based on an analysis artifact alone.
-				if (precRuleIndex >= 0 && precClassSubstitutable && precSimpleLoop && exact
+				// Exactness of the conflict is NOT required: the conflicting
+				// subsets diverge precisely because exit carries caller
+				// continuations (and outer incarnations of this loop) that
+				// iterate only rejoins after its free loop-exit - the
+				// inexact shapes are the common case in wrapper-dense
+				// grammars.
+				if (precRuleIndex >= 0 && precClassSubstitutable && precSimpleLoop
 					&& conflicting.cardinality() == 2
 					&& conflicting.get(1) && conflicting.get(2)) {
 					boolean exitForeign = false;
