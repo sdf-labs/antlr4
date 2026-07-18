@@ -1681,7 +1681,7 @@ where
 //   table 5 (decision 3): LL(k), k=1, 9 states, 1 adaptive escapes
 //   table 6 (decision 3): LL(k), k=0, 1 states
 //   table 7 (decision 7): LL(k), k=1, 9 states
-//   table 8 (decision 7): LL(k), k=1, 10 states, 1 adaptive escapes
+//   table 8 (decision 7): LL(k), k=1, 10 states
 static ATN_SIMULATOR_MANAGER: LazyLock<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));
 static _ATN: LazyLock<ATN> =
     LazyLock::new(|| ATNDeserializer::new(None).deserialize_compact(&_serializedATN));
@@ -1703,6 +1703,6 @@ static _serializedATN: [&'static str; 19] = [
     "HBwYARIwAAQEAQIEBAQEBAAAAAAAAAAAADAwMDAwMDAwMAEBAgICBAQEBgYGCAgICgoODBAWDhoaEAES",
     "MAAEBAEEBAQEBAQAAAAAAAAAAAAwMDAwMDAwMDABAQICAgQEBAYGBggICAoKDgwQFg4aGhABAgAEAAAA",
     "ARIwAAQEBAQEBAIEBAAAAAAAAAAAADAwMDAwMDAwMAEBAgICBAQEBgYGCAgICgoODBAWDhoaEAEUNgAE",
-    "BAQEBAQBBAQEAAAAAAAAAAAAADY2NjY2NjY2NjYBAQICAgQEBAYGBggICAoKDgwQEg4UFhAaGhIEBgQC",
+    "BAQEBAQCBAQEAAAAAAAAAAAAADY2NjY2NjY2NjYBAQICAgQEBAYGBggICAoKDgwQEg4UFhAaGhIEBgQC",
     "BAgKDA4EBAYOEAw="
 ];
