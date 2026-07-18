@@ -175,6 +175,18 @@ public class DecisionClassifier {
 		 * nothing is pure overhead.
 		 */
 		public double coverage;
+		/**
+		 * The decision's prefix-factor plan (see
+		 * {@link PrefixFactorAnalyzer}), populated when the decision has
+		 * factorable groups. Dry-run for the alt-mask mechanism: no
+		 * effect on emitted tables.
+		 */
+		public PrefixFactorAnalyzer.Plan factorPlan;
+		/** Dry-run: DFA states whose live-alt set is covered by one
+		 *  factor group (would accept with an alternative mask). */
+		public int factorMaskStates;
+		/** Dry-run: escape states that a mask accept would cure. */
+		public int factorEscapesCured;
 
 		public Result(DecisionState decisionState) {
 			this.decisionState = decisionState;
@@ -437,10 +449,17 @@ public class DecisionClassifier {
 	 */
 	protected Map<Integer, RuleTransition> callByFollowState;
 
+	/** Analyzer for prefix-factorable decisions (alt-mask dry run). */
+	protected final PrefixFactorAnalyzer factorAnalyzer;
+	/** Factor plan of the decision under construction; null when the
+	 *  decision has no groups or is a precedence loop decision. */
+	protected PrefixFactorAnalyzer.Plan currentFactorPlan;
+
 	public DecisionClassifier(Grammar g) {
 		this.g = g;
 		this.atn = g.atn;
 		this.allTokens = IntervalSet.of(Token.MIN_USER_TOKEN_TYPE, atn.maxTokenType);
+		this.factorAnalyzer = new PrefixFactorAnalyzer(g, atn);
 	}
 
 	/** Classify all decisions of the grammar, indexed by decision number. */
@@ -454,6 +473,7 @@ public class DecisionClassifier {
 
 	public Result classify(DecisionState s) {
 		Result res = new Result(s);
+		this.currentFactorPlan = null;
 		if (s.nonGreedy) {
 			res.category = Category.NON_GREEDY;
 			return res;
@@ -466,6 +486,16 @@ public class DecisionClassifier {
 			res.category = Category.LL1;
 			res.k = 1;
 			return res;
+		}
+
+		// alt-mask dry run: compute the prefix-factor plan up front; the
+		// construction attempts count the states it would resolve.
+		this.currentFactorPlan = factorAnalyzer.analyze(s);
+		if (currentFactorPlan.hasGroups()
+			&& "factor".equals(System.getProperty("antlr.dfa.debug"))) {
+			for (PrefixFactorAnalyzer.Group grp : currentFactorPlan.groups) {
+				System.err.printf("FACTOR d=%d %s%n", s.decision, grp.toString(g));
+			}
 		}
 
 		// iterative deepening: exact first, then progressively wider approximation
@@ -490,8 +520,12 @@ public class DecisionClassifier {
 			&& (outcome.category == Category.OVERFLOW
 				|| outcome.category == Category.CONTEXT_SENSITIVE)) {
 			Result hybrid = classifyHybrid(s);
-			if (hybrid != null && hybrid.dfa != null) return hybrid;
+			if (hybrid != null && hybrid.dfa != null) {
+				if (currentFactorPlan.hasGroups()) hybrid.factorPlan = currentFactorPlan;
+				return hybrid;
+			}
 		}
+		if (currentFactorPlan.hasGroups()) outcome.factorPlan = currentFactorPlan;
 		return outcome;
 	}
 
@@ -988,6 +1022,22 @@ public class DecisionClassifier {
 				acceptAlts.set(d, Math.max(0, alts.nextSetBit(0)));
 				continue;
 			}
+
+			// alt-mask dry run: a state whose live alternatives fall
+			// inside a single prefix-factor group would accept with an
+			// alternative mask instead of resolving further (or escaping)
+			PrefixFactorAnalyzer.Group factorGroup = currentFactorPlan != null
+				? currentFactorPlan.groupCovering(alts) : null;
+			if (factorGroup != null) {
+				res.factorMaskStates++;
+				if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+					// terminal simulation: measure the mask-protocol
+					// table - a mask accept ends the walk, so the whole
+					// subtree below is never built (and never escapes)
+					acceptAlts.set(d, Math.max(0, alts.nextSetBit(0)));
+					continue;
+				}
+			}
 			if (PredictionMode.hasSLLConflictTerminatingPrediction(PredictionMode.SLL, cs)) {
 				Collection<BitSet> altSubsets = PredictionMode.getConflictingAltSubsets(cs);
 				boolean exact = PredictionMode.allSubsetsConflict(altSubsets)
@@ -1130,6 +1180,13 @@ public class DecisionClassifier {
 				else if (hybridMode) {
 					// the conflict cannot be resolved statically: defer
 					// this state to adaptivePredict
+					if (factorGroup != null) {
+						res.factorEscapesCured++;
+						if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+							System.err.printf("FACTOR-CURE d=%d state=%d depth=%d alts=%s%n",
+								s.decision, d, stateDepth.get(d), alts);
+						}
+					}
 					acceptAlts.set(d, StaticDFA.ESCAPE);
 					if (System.getProperty("antlr.dfa.debug") != null) {
 						System.err.printf("ESCAPE-CONFLICT d=%d state=%d depth=%d exact=%s hard=%s anyB=%s allB=%s trustEA=%s alts=%s%n",
@@ -1165,6 +1222,13 @@ public class DecisionClassifier {
 				// first rank (bounded by the token alphabet) must not starve
 				// its own siblings, or single-token predictions - the
 				// dynamic majority - escape on sheer decision fanout.
+				if (factorGroup != null) {
+					res.factorEscapesCured++;
+					if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+						System.err.printf("FACTOR-CURE-CAP d=%d state=%d depth=%d alts=%s%n",
+							s.decision, d, stateDepth.get(d), alts);
+					}
+				}
 				acceptAlts.set(d, StaticDFA.ESCAPE);
 				continue;
 			}
@@ -2017,6 +2081,22 @@ public class DecisionClassifier {
 			fbStaticOnly, results.size(), fbEscapeStates, fbHybridDecisions,
 			fbAdaptiveClasses, fbAdaptiveOnly));
 
+		// alt-mask dry run totals
+		int factorDecisions = 0, factorGroups = 0, factorCured = 0, factorMaskStates = 0;
+		for (Result r : results) {
+			if (r.factorPlan != null && r.factorPlan.hasGroups()) {
+				factorDecisions++;
+				factorGroups += r.factorPlan.groups.size();
+				factorCured += r.factorEscapesCured;
+				factorMaskStates += r.factorMaskStates;
+			}
+		}
+		if (factorDecisions > 0) {
+			buf.append(String.format(
+				"factorable: %d decisions (%d groups); mask-accepts=%d states; escapes curable=%d%n",
+				factorDecisions, factorGroups, factorMaskStates, factorCured));
+		}
+
 		int maxKAnyAcyclic = 0;
 		int maxKLLK = 0;
 		Map<Integer, Integer> llkHistogram = new java.util.TreeMap<Integer, Integer>();
@@ -2062,6 +2142,12 @@ public class DecisionClassifier {
 					? " [widened]" : " [widened depth="+r.wideningDepth+"]");
 			}
 			if (r.sawPrecPredicate) buf.append(" [precpred-in-lookahead]");
+			if (r.factorPlan != null && r.factorPlan.hasGroups()) {
+				buf.append(" [factorable: groups=").append(r.factorPlan.groups.size())
+				   .append(" maskStates=").append(r.factorMaskStates)
+				   .append(" cures=").append(r.factorEscapesCured)
+				   .append(']');
+			}
 			buf.append('\n');
 		}
 		buf.append("LLK k histogram: ").append(llkHistogram).append('\n');
