@@ -49,6 +49,16 @@ public class StaticDFA {
 	/** Predicted alternative per state; 0 = not an accept state; {@link #ESCAPE} = escape. */
 	public final int[] accepts;
 	/**
+	 * Alternative-mask accept per state; 0 = none. A nonzero entry marks a
+	 * terminal state where the walker returns the mask (bit {@code 1<<(alt-1)}
+	 * per live alternative) instead of a unique alternative: the live set is
+	 * covered by a single prefix-factor group (see PrefixFactorAnalyzer), so
+	 * the generated parser executes the group's shared prefix and resolves
+	 * the choice with its tail decision. Only ever set on states that would
+	 * otherwise be escape states.
+	 */
+	public final long[] acceptMasks;
+	/**
 	 * Error-avoidance fallback per state; 0 = none. When prediction dies at
 	 * a state on a token matching no edge, the walker returns this
 	 * alternative (the minimum one that already finished the decision entry
@@ -66,11 +76,12 @@ public class StaticDFA {
 	/** Max lookahead depth if acyclic; -1 if cyclic. */
 	public final int maxK;
 
-	public StaticDFA(int decision, int numStates, int[] accepts, int[] fallbacks,
-					 int[] edgeOffsets, int[] edges, boolean cyclic, int maxK) {
+	public StaticDFA(int decision, int numStates, int[] accepts, long[] acceptMasks,
+					 int[] fallbacks, int[] edgeOffsets, int[] edges, boolean cyclic, int maxK) {
 		this.decision = decision;
 		this.numStates = numStates;
 		this.accepts = accepts;
+		this.acceptMasks = acceptMasks;
 		this.fallbacks = fallbacks;
 		this.edgeOffsets = edgeOffsets;
 		this.edges = edges;

@@ -973,6 +973,7 @@ public class DecisionClassifier {
 		List<List<Integer>> edges = new ArrayList<List<Integer>>();
 		List<List<IntervalSet>> edgeLabels = new ArrayList<List<IntervalSet>>();
 		List<Integer> acceptAlts = new ArrayList<Integer>(); // 0 = not an accept state
+		List<Long> acceptMasks = new ArrayList<Long>(); // 0 = not a mask-accept state
 		List<Integer> fallbackAlts = new ArrayList<Integer>(); // 0 = none
 		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
 
@@ -1002,6 +1003,7 @@ public class DecisionClassifier {
 		edges.add(new ArrayList<Integer>());
 		edgeLabels.add(new ArrayList<IntervalSet>());
 		acceptAlts.add(0);
+		acceptMasks.add(0L);
 		fallbackAlts.add(0);
 		stateDepth.add(0);
 
@@ -1023,21 +1025,14 @@ public class DecisionClassifier {
 				continue;
 			}
 
-			// alt-mask dry run: a state whose live alternatives fall
-			// inside a single prefix-factor group would accept with an
-			// alternative mask instead of resolving further (or escaping)
+			// alt-mask acceptance: a state whose live alternatives fall
+			// inside a single prefix-factor group resolves to an
+			// alternative mask instead of a unique alt or an escape; the
+			// generated parser executes the group's shared prefix and
+			// defers the choice to its tail decision
 			PrefixFactorAnalyzer.Group factorGroup = currentFactorPlan != null
 				? currentFactorPlan.groupCovering(alts) : null;
-			if (factorGroup != null) {
-				res.factorMaskStates++;
-				if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
-					// terminal simulation: measure the mask-protocol
-					// table - a mask accept ends the walk, so the whole
-					// subtree below is never built (and never escapes)
-					acceptAlts.set(d, Math.max(0, alts.nextSetBit(0)));
-					continue;
-				}
-			}
+			if (factorGroup != null) res.factorMaskStates++;
 			if (PredictionMode.hasSLLConflictTerminatingPrediction(PredictionMode.SLL, cs)) {
 				Collection<BitSet> altSubsets = PredictionMode.getConflictingAltSubsets(cs);
 				boolean exact = PredictionMode.allSubsetsConflict(altSubsets)
@@ -1179,15 +1174,22 @@ public class DecisionClassifier {
 				}
 				else if (hybridMode) {
 					// the conflict cannot be resolved statically: defer
-					// this state to adaptivePredict
+					// this state to adaptivePredict - UNLESS its live
+					// alternatives are covered by one prefix-factor
+					// group, in which case it accepts with the group's
+					// alternative mask (the parser resolves the choice
+					// at the group's tail decision)
 					if (factorGroup != null) {
 						res.factorEscapesCured++;
+						acceptMasks.set(d, altBits(factorGroup.alts));
 						if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
-							System.err.printf("FACTOR-CURE d=%d state=%d depth=%d alts=%s%n",
+							System.err.printf("FACTOR-MASK d=%d state=%d depth=%d alts=%s%n",
 								s.decision, d, stateDepth.get(d), alts);
 						}
 					}
-					acceptAlts.set(d, StaticDFA.ESCAPE);
+					else {
+						acceptAlts.set(d, StaticDFA.ESCAPE);
+					}
 					if (System.getProperty("antlr.dfa.debug") != null) {
 						System.err.printf("ESCAPE-CONFLICT d=%d state=%d depth=%d exact=%s hard=%s anyB=%s allB=%s trustEA=%s alts=%s%n",
 							s.decision, d, stateDepth.get(d), exact, widenedTainted,
@@ -1224,12 +1226,15 @@ public class DecisionClassifier {
 				// dynamic majority - escape on sheer decision fanout.
 				if (factorGroup != null) {
 					res.factorEscapesCured++;
+					acceptMasks.set(d, altBits(factorGroup.alts));
 					if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
-						System.err.printf("FACTOR-CURE-CAP d=%d state=%d depth=%d alts=%s%n",
+						System.err.printf("FACTOR-MASK-CAP d=%d state=%d depth=%d alts=%s%n",
 							s.decision, d, stateDepth.get(d), alts);
 					}
 				}
-				acceptAlts.set(d, StaticDFA.ESCAPE);
+				else {
+					acceptAlts.set(d, StaticDFA.ESCAPE);
+				}
 				continue;
 			}
 
@@ -1260,6 +1265,7 @@ public class DecisionClassifier {
 					edges.add(new ArrayList<Integer>());
 					edgeLabels.add(new ArrayList<IntervalSet>());
 					acceptAlts.add(0);
+					acceptMasks.add(0L);
 					fallbackAlts.add(0);
 					stateDepth.add(stateDepth.get(d)+1);
 					work.add(id);
@@ -1301,9 +1307,9 @@ public class DecisionClassifier {
 			// something - a start-state escape means nothing is decidable
 			res.category = Category.HYBRID;
 			res.escapes = escapes;
-			res.coverage = startCoverage(edges, edgeLabels, acceptAlts);
+			res.coverage = startCoverage(edges, edgeLabels, acceptAlts, acceptMasks);
 			if (acceptAlts.get(0) != StaticDFA.ESCAPE && res.coverage >= hybridMinCoverage) {
-				res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, fallbackAlts, cyclic, res.k);
+				res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, acceptMasks, fallbackAlts, cyclic, res.k);
 			}
 			return false;
 		}
@@ -1317,7 +1323,7 @@ public class DecisionClassifier {
 
 		if (res.category == Category.LLK || res.category == Category.LLSTAR
 			|| res.category == Category.EXACT_AMBIG) {
-			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, fallbackAlts, cyclic, res.k);
+			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, acceptMasks, fallbackAlts, cyclic, res.k);
 		}
 		return false;
 	}
@@ -1333,7 +1339,8 @@ public class DecisionClassifier {
 	 */
 	protected static double startCoverage(List<List<Integer>> edges,
 										  List<List<IntervalSet>> edgeLabels,
-										  List<Integer> acceptAlts) {
+										  List<Integer> acceptAlts,
+										  List<Long> acceptMasks) {
 		int n = edges.size();
 		// reverse reachability from accept states
 		List<List<Integer>> reverse = new ArrayList<List<Integer>>(n);
@@ -1344,7 +1351,7 @@ public class DecisionClassifier {
 		boolean[] reachesAccept = new boolean[n];
 		Deque<Integer> work = new ArrayDeque<Integer>();
 		for (int i = 0; i < n; i++) {
-			if (acceptAlts.get(i) > 0) {
+			if (acceptAlts.get(i) > 0 || acceptMasks.get(i) != 0) {
 				reachesAccept[i] = true;
 				work.add(i);
 			}
@@ -1405,20 +1412,33 @@ public class DecisionClassifier {
 		System.err.println(sb);
 	}
 
+	/** Alternative-set bitmask of a prefix-factor group (bit 1<<(alt-1)
+	 *  per member alternative). */
+	protected static long altBits(BitSet alts) {
+		long bits = 0;
+		for (int a = alts.nextSetBit(0); a >= 0; a = alts.nextSetBit(a+1)) {
+			bits |= 1L << (a-1);
+		}
+		return bits;
+	}
+
 	/** Serialize the recorded DFA into the flat table form used by codegen. */
 	protected static StaticDFA toStaticDFA(int decision,
 										   List<List<IntervalSet>> edgeLabels,
 										   List<List<Integer>> edgeTargets,
 										   List<Integer> acceptAlts,
+										   List<Long> acceptMasks,
 										   List<Integer> fallbackAlts,
 										   boolean cyclic, int maxK) {
 		int n = edgeTargets.size();
 		int[] accepts = new int[n];
+		long[] masks = new long[n];
 		int[] fallbacks = new int[n];
 		int[] offsets = new int[n+1];
 		List<int[]> triples = new ArrayList<int[]>();
 		for (int s = 0; s < n; s++) {
 			accepts[s] = acceptAlts.get(s);
+			masks[s] = acceptMasks.get(s);
 			fallbacks[s] = fallbackAlts.get(s);
 			offsets[s] = triples.size()*3;
 			List<int[]> stateTriples = new ArrayList<int[]>();
@@ -1439,7 +1459,7 @@ public class DecisionClassifier {
 			edges[i*3+1] = triples.get(i)[1];
 			edges[i*3+2] = triples.get(i)[2];
 		}
-		return new StaticDFA(decision, n, accepts, fallbacks, offsets, edges, cyclic, maxK);
+		return new StaticDFA(decision, n, accepts, masks, fallbacks, offsets, edges, cyclic, maxK);
 	}
 
 	/** A DFA edge under construction: token class label -> successor config set. */

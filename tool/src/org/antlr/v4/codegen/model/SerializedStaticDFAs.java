@@ -41,6 +41,15 @@ import java.util.Map;
  *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
+ *   numMaskStates                   (states accepting with an alternative
+ *                                    mask instead of a unique alt: the live
+ *                                    set is covered by one prefix-factor
+ *                                    group; the parser executes the shared
+ *                                    prefix and resolves at the tail decision)
+ *   for each mask state:            (sorted by state index)
+ *     state
+ *     numAlts
+ *     alts[numAlts]                 (the group's member alternatives)
  * numPrecedenceDispatches
  * for each dispatch:                (a left-recursive precedence loop decision)
  *   decision
@@ -54,7 +63,8 @@ import java.util.Map;
  * their table index.</p>
  */
 public class SerializedStaticDFAs extends OutputModelObject {
-	public static final int FORMAT_VERSION = 5;
+	/** v6: per-table alternative-mask section (prefix-factor groups). */
+	public static final int FORMAT_VERSION = 6;
 
 	public final int numTables;
 	/** Base64 text segments of the serialized blob, one rendered per line. */
@@ -141,6 +151,23 @@ public class SerializedStaticDFAs extends OutputModelObject {
 			for (int v : dfa.fallbacks) data.add(v);
 			for (int v : dfa.edgeOffsets) data.add(v);
 			for (int v : dfa.edges) data.add(v);
+			// alternative-mask section (v6)
+			int numMaskStates = 0;
+			for (long m : dfa.acceptMasks) {
+				if (m != 0) numMaskStates++;
+			}
+			data.add(numMaskStates);
+			if (numMaskStates > 0) {
+				for (int s = 0; s < dfa.numStates; s++) {
+					long m = dfa.acceptMasks[s];
+					if (m == 0) continue;
+					data.add(s);
+					data.add(Long.bitCount(m));
+					for (int a = 0; a < 64; a++) {
+						if ((m & (1L << a)) != 0) data.add(a+1);
+					}
+				}
+			}
 			int escapes = 0;
 			for (int v : dfa.accepts) {
 				if (v == StaticDFA.ESCAPE) escapes++;
@@ -149,7 +176,8 @@ public class SerializedStaticDFAs extends OutputModelObject {
 					? "decision "+dfa.decision : "table "+i+" (decision "+dfa.decision+")")
 				+": "+(dfa.cyclic ? "LL(*) cyclic" : "LL(k), k="+dfa.maxK)
 				+", "+dfa.numStates+" states"
-				+(escapes > 0 ? ", "+escapes+" adaptive escapes" : ""));
+				+(escapes > 0 ? ", "+escapes+" adaptive escapes" : "")
+				+(numMaskStates > 0 ? ", "+numMaskStates+" mask accepts" : ""));
 		}
 		data.add(dispatches.size());
 		for (int[] entry : dispatches) {
@@ -163,6 +191,7 @@ public class SerializedStaticDFAs extends OutputModelObject {
 		for (int i = 0; i < tables.size(); i++) {
 			StaticDFA o = tables.get(i);
 			if (o == t || (Arrays.equals(o.accepts, t.accepts)
+				&& Arrays.equals(o.acceptMasks, t.acceptMasks)
 				&& Arrays.equals(o.fallbacks, t.fallbacks)
 				&& Arrays.equals(o.edgeOffsets, t.edgeOffsets)
 				&& Arrays.equals(o.edges, t.edges))) {
