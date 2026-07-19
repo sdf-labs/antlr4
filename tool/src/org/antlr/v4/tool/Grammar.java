@@ -204,6 +204,15 @@ public class Grammar implements AttributeResolver {
 	 */
 	public Map<Integer, org.antlr.v4.analysis.PrecedenceStaticDFA> staticPrecedenceDFAs;
 
+	/**
+	 * Prefix-factor plans of factorable decisions (see
+	 * {@link org.antlr.v4.analysis.PrefixFactorAnalyzer}), keyed by decision
+	 * number; populated only with -Xstatic-dfa, and only for decisions with
+	 * at least one validated group. Drives the FactoredAltBlock codegen
+	 * ("implied left-factoring").
+	 */
+	public Map<Integer, org.antlr.v4.analysis.PrefixFactorAnalyzer.Plan> staticFactorPlans;
+
 	public final Tool tool;
 
 	/** Token names and literal tokens like "void" are uniquely indexed.

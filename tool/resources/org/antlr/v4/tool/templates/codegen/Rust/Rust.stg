@@ -793,6 +793,47 @@ match <staticDFAPredict(choice)> {
 }
 >>
 
+// Mask-protocol prediction for prefix-factorable decisions ("implied
+// left-factoring"): dfa_predict_mask returns the set of live
+// alternatives as a bitmask (0 = the table defers to the adaptive
+// engine; adaptive_predict's unique answer widens to its singleton bit,
+// routing through the same arms).
+maskPredict(choice) ::= "{ let _m = <self()>.base.dfa_predict_mask(<choice.decision>)?; <if(choice.tableCanDefer)>if _m == 0 { 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? - 1) as u32) } else { _m }<else>_m<endif> }"
+
+FactoredAltBlock(choice, preamble, singletons, groups, error) ::= <<
+<self()>.base.set_state(<choice.stateNumber>);
+<self()>.err_handler.sync(&mut <self()>.base)?;
+<if(choice.label)><labelref(choice.label,{ = <self()>.base.input.lt(1).map(|t| t as _);})><endif>
+<preamble; separator="\n">
+match <maskPredict(choice)> {
+<singletons; separator=",\n">
+<groups; separator=",\n">
+	_ => {}
+}
+>>
+
+SingletonArm(alt, body) ::= <<
+x if x == <alt.armKey> =>{
+	<body>
+\}
+>>
+
+FactoredGroup(grp, prefix, tails) ::= <<
+x if x == <grp.maskKey> =>{
+	<prefix>
+	match <self()>.input.la(1) {
+	<tails; separator=",\n">
+		_ => Err(ANTLRError::no_alt(&mut <self()>.base))?
+	}
+\}
+>>
+
+FactoredTailArm(t, body) ::= <<
+<t.armKey> =>{
+	<body>
+\}
+>>
+
 DFAOptionalBlock(choice, alts, error) ::= <<
 <self()>.base.set_state(<choice.stateNumber>);
 <self()>.err_handler.sync(&mut <self()>.base)?;

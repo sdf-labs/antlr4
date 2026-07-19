@@ -1182,10 +1182,6 @@ public class DecisionClassifier {
 					if (factorGroup != null) {
 						res.factorEscapesCured++;
 						acceptMasks.set(d, altBits(factorGroup.alts));
-						if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
-							System.err.printf("FACTOR-MASK d=%d state=%d depth=%d alts=%s%n",
-								s.decision, d, stateDepth.get(d), alts);
-						}
 					}
 					else {
 						acceptAlts.set(d, StaticDFA.ESCAPE);
@@ -1227,10 +1223,6 @@ public class DecisionClassifier {
 				if (factorGroup != null) {
 					res.factorEscapesCured++;
 					acceptMasks.set(d, altBits(factorGroup.alts));
-					if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
-						System.err.printf("FACTOR-MASK-CAP d=%d state=%d depth=%d alts=%s%n",
-							s.decision, d, stateDepth.get(d), alts);
-					}
 				}
 				else {
 					acceptAlts.set(d, StaticDFA.ESCAPE);
@@ -2016,6 +2008,8 @@ public class DecisionClassifier {
 		classifier.abortOnUntrustedConflict = true;
 		Map<Integer, StaticDFA> tables = new LinkedHashMap<Integer, StaticDFA>();
 		Map<Integer, PrecedenceStaticDFA> precTables = new LinkedHashMap<Integer, PrecedenceStaticDFA>();
+		Map<Integer, PrefixFactorAnalyzer.Plan> factorPlans =
+			new LinkedHashMap<Integer, PrefixFactorAnalyzer.Plan>();
 		for (DecisionState s : g.atn.decisionToState) {
 			// the LL(1) fast path already covers disjoint decisions
 			if (g.decisionLOOK != null && s.decision < g.decisionLOOK.size()
@@ -2029,9 +2023,53 @@ public class DecisionClassifier {
 			else if (r.precDfa != null) {
 				precTables.put(s.decision, r.precDfa);
 			}
+			if (r.factorPlan != null && r.factorPlan.hasGroups()) {
+				factorPlans.put(s.decision, r.factorPlan);
+			}
 		}
 		g.staticDecisionDFAs = tables;
 		g.staticPrecedenceDFAs = precTables;
+		g.staticFactorPlans = factorPlans;
+		addSyntheticContinuationStates(g, factorPlans);
+	}
+
+	/**
+	 * Create, for every group of every factor plan, the two synthetic ATN
+	 * states the factored codegen needs (see
+	 * {@link PrefixFactorAnalyzer.Group#syntheticInvokeState}): the shared
+	 * prefix's rule invocation must push a call-site whose continuation
+	 * keeps every member's tail viable, so nested adaptive simulations
+	 * inside the shared invocation resolve against the real tail decision
+	 * rather than against one member's (arbitrary) alternative
+	 * continuation. The states are appended to the grammar's ATN before it
+	 * is serialized into the generated parser; they are unreachable from
+	 * any rule start.
+	 */
+	private static void addSyntheticContinuationStates(
+		Grammar g, Map<Integer, PrefixFactorAnalyzer.Plan> factorPlans)
+	{
+		for (PrefixFactorAnalyzer.Plan plan : factorPlans.values()) {
+			for (PrefixFactorAnalyzer.Group grp : plan.groups) {
+				int ruleIndex = g.atn.decisionToState.get(plan.decision).ruleIndex;
+				int sharedRule = grp.prefix.get(grp.prefix.size()-1).id;
+				org.antlr.v4.runtime.atn.BasicState tail =
+					new org.antlr.v4.runtime.atn.BasicState();
+				tail.ruleIndex = ruleIndex;
+				g.atn.addState(tail);
+				for (int alt = grp.alts.nextSetBit(0); alt >= 0; alt = grp.alts.nextSetBit(alt+1)) {
+					tail.addTransition(new org.antlr.v4.runtime.atn.EpsilonTransition(
+						g.atn.states.get(grp.tailStartState.get(alt))));
+				}
+				org.antlr.v4.runtime.atn.BasicState invoke =
+					new org.antlr.v4.runtime.atn.BasicState();
+				invoke.ruleIndex = ruleIndex;
+				g.atn.addState(invoke);
+				invoke.addTransition(new org.antlr.v4.runtime.atn.RuleTransition(
+					g.atn.ruleToStartState[sharedRule], sharedRule, tail));
+				grp.syntheticTailState = tail.stateNumber;
+				grp.syntheticInvokeState = invoke.stateNumber;
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------
