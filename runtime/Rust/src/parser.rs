@@ -494,6 +494,35 @@ where
     }
 
     pub fn dfa_predict(&mut self, decision: i32) -> Result<i32, ANTLRError> {
+        let mask = self.dfa_walk(decision)?;
+        if mask == 0 || !mask.is_power_of_two() {
+            // defer to the adaptive engine: escape state, no table, or a
+            // mask-accept state this call site has no factored
+            // alternative path for
+            Ok(crate::atn::INVALID_ALT)
+        } else {
+            Ok(mask.trailing_zeros() as i32 + 1)
+        }
+    }
+
+    /// Mask-returning sibling of [`Self::dfa_predict`]: walks the same
+    /// static table but returns the set of live alternatives as a bitmask
+    /// (bit `1<<(alt-1)` per alternative) instead of a unique
+    /// alternative. A mask-accept state returns its mask: the live
+    /// alternatives are covered by one prefix-factor group, so the
+    /// generated parser executes the group's shared prefix and resolves
+    /// the choice with its tail decision. `0` defers to the adaptive
+    /// engine (same conditions as `dfa_predict` returning
+    /// [`crate::atn::INVALID_ALT`]); a unique accept returns its
+    /// single-bit mask.
+    pub fn dfa_predict_mask(&mut self, decision: i32) -> Result<u64, ANTLRError> {
+        self.dfa_walk(decision)
+    }
+
+    /// The shared static-table walk: the prediction of `decision` as an
+    /// alternative mask, or `0` when the table defers to the adaptive
+    /// engine.
+    fn dfa_walk(&mut self, decision: i32) -> Result<u64, ANTLRError> {
         // the precedence selects the table of dispatched decisions (the
         // operator loops of left-recursive rules); plain decisions ignore it
         let precedence = self.get_precedence();
@@ -504,14 +533,14 @@ where
             // rule's compatible call sites, but an entry invocation pops
             // into the grammar-wide FOLLOW space instead - only the
             // adaptive engine models that.
-            return Ok(crate::atn::INVALID_ALT);
+            return Ok(0);
         }
         let Some(dfa) = static_dfas.table(decision, precedence) else {
             // this precedence class has no static table
             if Self::dfa_trace() {
                 eprintln!("DFA-TRACE no-table d={} prec={}", decision, precedence);
             }
-            return Ok(crate::atn::INVALID_ALT);
+            return Ok(0);
         };
         let mut s = 0usize;
         let mut i = 1isize;
@@ -530,10 +559,26 @@ where
                         self.input.la(1)
                     );
                 }
-                return Ok(crate::atn::INVALID_ALT);
+                return Ok(0);
+            }
+            if let Some(mask) = dfa.accept_mask(s) {
+                // mask-accept: the live alternatives are covered by one
+                // prefix-factor group
+                if Self::dfa_trace() {
+                    eprintln!(
+                        "DFA-TRACE mask d={} prec={} state={} depth={} la1={} mask={:#x}",
+                        decision,
+                        precedence,
+                        s,
+                        i - 1,
+                        self.input.la(1),
+                        mask
+                    );
+                }
+                return Ok(mask);
             }
             if let Some(alt) = dfa.accept(s) {
-                return Ok(alt);
+                return Ok(1u64 << (alt - 1));
             }
             let t = self.input.la(i);
             match dfa.edge(s, t) {
@@ -548,7 +593,7 @@ where
                     // mismatch point - mirroring adaptive_predict's
                     // finished-decision-entry-rule recovery.
                     if let Some(alt) = dfa.fallback(s) {
-                        return Ok(alt);
+                        return Ok(1u64 << (alt - 1));
                     }
                     let start = self.input.lt(1).map(|t| OwningToken::from(t as &dyn Token));
                     let offending = self.input.lt(i).map(|t| OwningToken::from(t as &dyn Token));

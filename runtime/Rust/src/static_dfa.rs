@@ -47,8 +47,9 @@
 //! behaves like a hand-rolled precedence-climbing (Pratt) parser.
 
 /// Format version understood by this runtime; must match the tool's
-/// `SerializedStaticDFAs.FORMAT_VERSION`.
-pub const FORMAT_VERSION: i32 = 5;
+/// `SerializedStaticDFAs.FORMAT_VERSION`. v6 adds the per-table
+/// alternative-mask section (prefix-factor groups).
+pub const FORMAT_VERSION: i32 = 6;
 
 /// The deserialized static prediction tables of one generated parser.
 ///
@@ -67,6 +68,9 @@ pub struct StaticDFATables {
     data: Vec<i32>,
     /// Per-table (accepts_at, fallbacks_at, edge_offsets_at, edges_at) indexes into `data`.
     metas: Vec<(usize, usize, usize, usize)>,
+    /// Per-table alternative-mask accepts (bit 1<<(alt-1) per live
+    /// alternative of the covering prefix-factor group; 0 = none).
+    masks: Vec<Vec<u64>>,
     /// decision number -> table index (`>= 0`), `-1` (no table), or
     /// `-(dispatch index) - 2` (precedence-dispatched decision).
     decision_to_table: Vec<i32>,
@@ -82,6 +86,12 @@ pub struct StaticDFATables {
 pub struct StaticDFATable<'a> {
     /// Predicted alternative per state; 0 = not an accept state.
     pub accepts: &'a [i32],
+    /// Alternative-mask accept per state; 0 = none. A nonzero entry marks
+    /// a terminal state where the walker returns the mask: the live
+    /// alternatives are covered by one prefix-factor group, so the
+    /// generated parser executes the group's shared prefix and resolves
+    /// the choice with its tail decision.
+    pub masks: &'a [u64],
     /// Error-avoidance fallback per state; 0 = none. Returned when a
     /// lookahead token matches no edge, so the parser fails later with a
     /// more precise error at the mismatch point - mirroring
@@ -101,6 +111,7 @@ impl StaticDFATables {
         Self {
             data: Vec::new(),
             metas: Vec::new(),
+            masks: Vec::new(),
             decision_to_table: Vec::new(),
             dispatch_data: Vec::new(),
             dispatch_at: Vec::new(),
@@ -129,6 +140,7 @@ impl StaticDFATables {
 
         let mut data = Vec::new();
         let mut metas = Vec::with_capacity(num_tables);
+        let mut masks = Vec::with_capacity(num_tables);
         let mut decision_to_table = vec![-1i32; num_slots];
 
         for table in 0..num_tables {
@@ -155,6 +167,19 @@ impl StaticDFATables {
             for _ in 0..num_edge_ints {
                 data.push(next());
             }
+            // v6: alternative-mask section
+            let num_mask_states = next() as usize;
+            let mut table_masks = vec![0u64; num_states];
+            for _ in 0..num_mask_states {
+                let state = next() as usize;
+                let num_alts = next() as usize;
+                let mut bits = 0u64;
+                for _ in 0..num_alts {
+                    bits |= 1u64 << (next() - 1);
+                }
+                table_masks[state] = bits;
+            }
+            masks.push(table_masks);
             metas.push((accepts_at, fallbacks_at, edge_offsets_at, edges_at));
         }
 
@@ -177,6 +202,7 @@ impl StaticDFATables {
         Self {
             data,
             metas,
+            masks,
             decision_to_table,
             dispatch_data,
             dispatch_at,
@@ -225,6 +251,7 @@ impl StaticDFATables {
             .unwrap_or(self.data.len());
         Some(StaticDFATable {
             accepts: &self.data[accepts_at..fallbacks_at],
+            masks: &self.masks[t as usize],
             fallbacks: &self.data[fallbacks_at..edge_offsets_at],
             edge_offsets: &self.data[edge_offsets_at..edges_at],
             edges: &self.data[edges_at..end],
@@ -254,6 +281,19 @@ impl<'a> StaticDFATable<'a> {
     #[inline]
     pub fn is_escape(&self, state: usize) -> bool {
         self.accepts[state] == ESCAPE
+    }
+
+    /// Alternative mask of `state` when it mask-accepts (the live
+    /// alternatives are covered by one prefix-factor group; bit
+    /// `1<<(alt-1)` per member).
+    #[inline]
+    pub fn accept_mask(&self, state: usize) -> Option<u64> {
+        let m = self.masks[state];
+        if m != 0 {
+            Some(m)
+        } else {
+            None
+        }
     }
 
     /// Error-avoidance fallback alternative of `state`, if any.

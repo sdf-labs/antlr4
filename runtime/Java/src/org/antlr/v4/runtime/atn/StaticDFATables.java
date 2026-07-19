@@ -60,7 +60,7 @@ import java.util.Base64;
  */
 public class StaticDFATables {
 	/** Must match the tool's SerializedStaticDFAs.FORMAT_VERSION. */
-	public static final int FORMAT_VERSION = 5;
+	public static final int FORMAT_VERSION = 6;
 
 	/** Concatenated per-table data: accepts, fallbacks, edgeOffsets, edges. */
 	protected final int[] data;
@@ -124,6 +124,19 @@ public class StaticDFATables {
 			for (int i = 0; i < numStates+1; i++) data.add(ints.next());
 			metas[table*5+3] = data.size;                     // edgesAt
 			for (int i = 0; i < numEdgeInts; i++) data.add(ints.next());
+			// v6: alternative-mask section. The Java target has no
+			// factored codegen, so a mask-accept state simply defers to
+			// adaptivePredict - exactly like an escape state - and the
+			// mask's member alternatives are not retained here (the Rust
+			// runtime, which does implement the mask protocol, decodes
+			// them from the same section).
+			int numMaskStates = ints.next();
+			for (int i = 0; i < numMaskStates; i++) {
+				int state = ints.next();
+				int numAlts = ints.next();
+				for (int a = 0; a < numAlts; a++) ints.next();
+				data.set(metas[table*5]+state, MASK_DEFER);
+			}
 			metas[table*5+4] = data.size;                     // endAt
 		}
 		int numDispatches = ints.next();
@@ -144,6 +157,11 @@ public class StaticDFATables {
 	/** {@code accepts} sentinel: a hybrid table's escape state - the walker
 	 *  defers the whole prediction to {@code adaptivePredict}. */
 	public static final int ESCAPE = -1;
+	/** {@code accepts} sentinel: a mask-accept state (the live alternatives
+	 *  are covered by one prefix-factor group). Java has no factored
+	 *  codegen, so the walker defers to {@code adaptivePredict}; the Rust
+	 *  runtime resolves the mask through its factored alternative path. */
+	public static final int MASK_DEFER = -2;
 
 	/**
 	 * Is {@code decision} precedence-dispatched (per-precedence-class
@@ -247,6 +265,8 @@ public class StaticDFATables {
 			}
 			data[size++] = v;
 		}
+
+		void set(int i, int v) { data[i] = v; }
 
 		int[] toArray() {
 			int[] result = new int[size];

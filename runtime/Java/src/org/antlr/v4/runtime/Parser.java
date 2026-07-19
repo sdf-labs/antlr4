@@ -566,12 +566,15 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 		while (true) {
 			int alt = tables.accept(table, s);
 			if ( alt>0 ) return alt;
-			if ( alt==StaticDFATables.ESCAPE ) {
-				// hybrid-table escape: rerun the prediction through the
-				// adaptive engine (no input was consumed, so the rescan
-				// starts clean)
+			if ( alt<0 ) {
+				// hybrid-table escape (-1) or mask-accept state (-2; Java
+				// has no factored codegen): rerun the prediction through
+				// the adaptive engine (no input was consumed, so the
+				// rescan starts clean)
 				if ( System.getProperty("antlr.dfa.trace") != null ) {
-					System.err.println("DFA-TRACE escape d="+decision+" prec="+getPrecedence()+" state="+s+" la1="+_input.LA(1));
+					System.err.println("DFA-TRACE "
+						+(alt==StaticDFATables.MASK_DEFER ? "mask-defer" : "escape")
+						+" d="+decision+" prec="+getPrecedence()+" state="+s+" la1="+_input.LA(1));
 				}
 				return getInterpreter().adaptivePredict(_input, decision, _ctx);
 			}
