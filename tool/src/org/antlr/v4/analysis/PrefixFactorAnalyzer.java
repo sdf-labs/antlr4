@@ -100,6 +100,22 @@ public class PrefixFactorAnalyzer {
 		public final Map<Integer, Integer> tailStartState = new HashMap<Integer, Integer>();
 		/** Per-alternative local tail FIRST (block-end delimited). */
 		public final Map<Integer, IntervalSet> tailFirst = new HashMap<Integer, IntervalSet>();
+		/**
+		 * Synthetic call-site state of the group's shared rule
+		 * invocation, created in the ATN by
+		 * {@link DecisionClassifier#buildTables}: a BasicState with a
+		 * single RuleTransition to the shared rule whose follow state is
+		 * {@link #syntheticTailState}. The generated factored arm sets
+		 * the call-site state to this state, so nested adaptive
+		 * simulations inside the shared invocation pop into a position
+		 * where every member's tail is genuinely viable.
+		 */
+		public int syntheticInvokeState = -1;
+		/**
+		 * Synthetic tail-decision state: a BasicState with an epsilon
+		 * transition to every member's {@link #tailStartState}.
+		 */
+		public int syntheticTailState = -1;
 
 		public Group(List<Element> prefix) { this.prefix = prefix; }
 

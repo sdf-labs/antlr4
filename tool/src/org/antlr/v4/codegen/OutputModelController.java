@@ -249,6 +249,185 @@ public class OutputModelController {
 			CodeBlockForAlt alt = opAltsCode.get(i);
 			alt.insertOp(0, altAction);
 		}
+
+		// Alt-mask factoring ("implied left-factoring"): when the primary
+		// block's decision has a validated prefix-factor plan, replace the
+		// choice with a FactoredAltBlock whose group arms execute the
+		// shared prefix and resolve the choice with an LL(1) tail switch.
+		if (primaryStuff instanceof AltBlock) {
+			org.antlr.v4.tool.Grammar gg = getGrammar();
+			org.antlr.v4.analysis.PrefixFactorAnalyzer.Plan factorPlan =
+				gg.staticFactorPlans != null
+					? gg.staticFactorPlans.get(((AltBlock)primaryStuff).decision) : null;
+			if (factorPlan != null) {
+				org.antlr.v4.codegen.model.FactoredAltBlock factored =
+					buildFactoredAltBlock(r, (AltBlock)primaryStuff, factorPlan);
+				if (factored != null) outerAlt.ops.set(0, factored);
+				if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+					System.err.printf("FACTOR-CODEGEN rule=%s decision=%d groups=%d built=%s%n",
+						r.name, ((AltBlock)primaryStuff).decision, factorPlan.groups.size(),
+						factored != null);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Build the {@link org.antlr.v4.codegen.model.FactoredAltBlock} for a
+	 * left-recursive rule's primary block from its factor plan, or null
+	 * when model-level validation fails (the ordinary DFAAltBlock then
+	 * stays; mask-accept states in its table defer to adaptivePredict).
+	 * Runs after the label-context specialization actions have been
+	 * inserted in front of the primary alternatives, so each factored
+	 * tail arm can reuse its member's action op.
+	 */
+	protected org.antlr.v4.codegen.model.FactoredAltBlock buildFactoredAltBlock(
+		LeftRecursiveRule r,
+		AltBlock primaryBlock,
+		org.antlr.v4.analysis.PrefixFactorAnalyzer.Plan plan)
+	{
+		org.antlr.v4.codegen.model.FactoredAltBlock factored =
+			new org.antlr.v4.codegen.model.FactoredAltBlock(primaryBlock);
+		for (org.antlr.v4.analysis.PrefixFactorAnalyzer.Group grp : plan.groups) {
+			int[] members = new int[Long.bitCount(altBitsOf(grp))];
+			long mask = altBitsOf(grp);
+			int prefixLen = grp.prefix.size();
+			// per-member structure: context action (labeled alts), prefix, tail
+			java.util.List<CodeBlockForAlt> tailBodies = new java.util.ArrayList<CodeBlockForAlt>();
+			CodeBlockForAlt prefixBody = null;
+			boolean valid = true;
+			int m = 0;
+			for (int alt = grp.alts.nextSetBit(0); alt >= 0 && valid; alt = grp.alts.nextSetBit(alt+1)) {
+				if (alt < 1 || alt > primaryBlock.alts.size()
+					|| alt > r.recPrimaryAlts.size()) { valid = false; break; }
+				CodeBlockForAlt altBody = primaryBlock.alts.get(alt-1);
+				boolean hasCtxAction = r.recPrimaryAlts.get(alt-1).altLabel != null;
+				int skip = hasCtxAction ? 1 : 0;
+				// The ops list carries inert null placeholders between
+				// real element ops; the element sequence is the non-null ops.
+				java.util.List<SrcOp> elementOps = new java.util.ArrayList<SrcOp>();
+				if (altBody.ops != null) {
+					for (int i = skip; i < altBody.ops.size(); i++) {
+						SrcOp op = altBody.ops.get(i);
+						if (op != null) elementOps.add(op);
+					}
+				}
+				if (elementOps.size() < prefixLen + 1) {
+					if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+						System.err.printf("FACTOR-FAIL alt=%d elementOps=%d need>=%d%n", alt,
+							elementOps.size(), prefixLen + 1);
+					}
+					valid = false; break;
+				}
+				java.util.List<SrcOp> prefixOps = elementOps.subList(0, prefixLen);
+				for (SrcOp op : prefixOps) {
+					if (!isPlainPrefixElement(op)) {
+						if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+							System.err.printf("FACTOR-FAIL alt=%d op=%s not plain%n", alt,
+								op.getClass().getSimpleName());
+						}
+						valid = false; break;
+					}
+				}
+				if (!valid) break;
+				if (prefixBody == null) {
+					prefixBody = new CodeBlockForAlt(delegate);
+					java.util.List<SrcOp> sharedOps = new java.util.ArrayList<SrcOp>(prefixOps);
+					// The shared rule invocation must push the synthetic
+					// call-site state (whose continuation spans every
+					// member's tail), not any one member's - else nested
+					// adaptive simulations prune against that member's
+					// continuation (the (-1)-vs-(COL, -1) bug class).
+					org.antlr.v4.codegen.model.InvokeRule sharedInvoke =
+						new org.antlr.v4.codegen.model.InvokeRule(
+							(org.antlr.v4.codegen.ParserFactory)delegate,
+							((org.antlr.v4.codegen.model.InvokeRule)prefixOps.get(prefixLen-1)).ast,
+							null);
+					sharedInvoke.stateNumber = grp.syntheticInvokeState;
+					sharedOps.set(prefixLen-1, sharedInvoke);
+					prefixBody.addOps(sharedOps);
+				}
+				else if (!samePrefix(prefixBody.ops, prefixOps)) {
+					if ("factor".equals(System.getProperty("antlr.dfa.debug"))) {
+						System.err.printf("FACTOR-FAIL alt=%d prefix mismatch%n", alt);
+					}
+					valid = false; break;
+				}
+				CodeBlockForAlt tailBody = new CodeBlockForAlt(delegate);
+				if (hasCtxAction) tailBody.addOp(altBody.ops.get(0));
+				tailBody.addOps(new java.util.ArrayList<SrcOp>(elementOps.subList(prefixLen, elementOps.size())));
+				tailBodies.add(tailBody);
+				members[m++] = alt;
+			}
+			if (!valid) return null;
+			org.antlr.v4.codegen.model.FactoredGroup group =
+				new org.antlr.v4.codegen.model.FactoredGroup(delegate, mask, prefixBody);
+			for (int i = 0; i < members.length; i++) {
+				org.antlr.v4.runtime.misc.IntervalSet first = grp.tailFirst.get(members[i]);
+				if (first == null || first.isNil()) return null;
+				group.tails.add(new org.antlr.v4.codegen.model.FactoredTailArm(
+					delegate, tailArmKey(first), tailBodies.get(i)));
+			}
+			factored.groups.add(group);
+		}
+		return factored;
+	}
+
+	/** Group alternative bitmask (bit 1<<(alt-1) per member). */
+	private static long altBitsOf(org.antlr.v4.analysis.PrefixFactorAnalyzer.Group grp) {
+		long bits = 0;
+		for (int a = grp.alts.nextSetBit(0); a >= 0; a = grp.alts.nextSetBit(a+1)) {
+			bits |= 1L << (a-1);
+		}
+		return bits;
+	}
+
+	/** Prefix elements must be plain, unlabeled token matches or rule
+	 *  invocations (v1). */
+	private static boolean isPlainPrefixElement(SrcOp op) {
+		if (op instanceof org.antlr.v4.codegen.model.MatchToken) {
+			return ((org.antlr.v4.codegen.model.MatchToken)op).labels.isEmpty();
+		}
+		if (op instanceof org.antlr.v4.codegen.model.InvokeRule) {
+			return ((org.antlr.v4.codegen.model.InvokeRule)op).labels.isEmpty();
+		}
+		return false;
+	}
+
+	private static boolean samePrefixElement(SrcOp a, SrcOp b) {
+		if (a instanceof org.antlr.v4.codegen.model.MatchToken
+			&& b instanceof org.antlr.v4.codegen.model.MatchToken) {
+			return ((org.antlr.v4.codegen.model.MatchToken)a).ttype
+				== ((org.antlr.v4.codegen.model.MatchToken)b).ttype;
+		}
+		if (a instanceof org.antlr.v4.codegen.model.InvokeRule
+			&& b instanceof org.antlr.v4.codegen.model.InvokeRule) {
+			return ((org.antlr.v4.codegen.model.InvokeRule)a).name
+				.equals(((org.antlr.v4.codegen.model.InvokeRule)b).name);
+		}
+		return false;
+	}
+
+	private static boolean samePrefix(java.util.List<SrcOp> a, java.util.List<SrcOp> b) {
+		if (a.size() != b.size()) return false;
+		for (int i = 0; i < a.size(); i++) {
+			if (!samePrefixElement(a.get(i), b.get(i))) return false;
+		}
+		return true;
+	}
+
+	/** Match-arm pattern of a tail FIRST set: the grammar's token-type
+	 *  constants joined with " | ". */
+	private String tailArmKey(org.antlr.v4.runtime.misc.IntervalSet first) {
+		StringBuilder sb = new StringBuilder();
+		org.antlr.v4.codegen.Target target = delegate.getGenerator().getTarget();
+		for (int i = 0; i < first.size(); i++) {
+			if (i > 0) sb.append(" | ");
+			int ttype = first.get(i);
+			sb.append(getGrammar().name).append('_')
+				.append(target.escapeIfNeeded(target.getTokenTypeAsTargetLabel(getGrammar(), ttype)));
+		}
+		return sb.toString();
 	}
 
 	public void buildNormalRuleFunction(Rule r, RuleFunction function) {
