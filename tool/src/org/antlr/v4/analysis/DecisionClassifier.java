@@ -187,6 +187,11 @@ public class DecisionClassifier {
 		public int factorMaskStates;
 		/** Dry-run: escape states that a mask accept would cure. */
 		public int factorEscapesCured;
+		/** Dry-run: conflict states where the optional-postfix take rule
+		 *  fires (mirror + vetoes pass): would accept take (alt 1). */
+		public int takeRuleFires;
+		/** Dry-run: the decision is an optional-postfix (X Y?) shape. */
+		public boolean hasPostfixShape;
 
 		public Result(DecisionState decisionState) {
 			this.decisionState = decisionState;
@@ -451,15 +456,21 @@ public class DecisionClassifier {
 
 	/** Analyzer for prefix-factorable decisions (alt-mask dry run). */
 	protected final PrefixFactorAnalyzer factorAnalyzer;
+	/** Analyzer for optional-postfix (X Y?) decisions (take-rule dry run). */
+	protected final OptionalPostfixAnalyzer postfixAnalyzer;
 	/** Factor plan of the decision under construction; null when the
 	 *  decision has no groups or is a precedence loop decision. */
 	protected PrefixFactorAnalyzer.Plan currentFactorPlan;
+	/** Optional-postfix shape of the decision under construction; null
+	 *  when the decision is not an optional-postfix (X Y?) shape. */
+	protected OptionalPostfixAnalyzer.Shape currentPostfixShape;
 
 	public DecisionClassifier(Grammar g) {
 		this.g = g;
 		this.atn = g.atn;
 		this.allTokens = IntervalSet.of(Token.MIN_USER_TOKEN_TYPE, atn.maxTokenType);
 		this.factorAnalyzer = new PrefixFactorAnalyzer(g, atn);
+		this.postfixAnalyzer = new OptionalPostfixAnalyzer(atn);
 	}
 
 	/** Classify all decisions of the grammar, indexed by decision number. */
@@ -474,6 +485,7 @@ public class DecisionClassifier {
 	public Result classify(DecisionState s) {
 		Result res = new Result(s);
 		this.currentFactorPlan = null;
+		this.currentPostfixShape = null;
 		if (s.nonGreedy) {
 			res.category = Category.NON_GREEDY;
 			return res;
@@ -491,6 +503,8 @@ public class DecisionClassifier {
 		// alt-mask dry run: compute the prefix-factor plan up front; the
 		// construction attempts count the states it would resolve.
 		this.currentFactorPlan = factorAnalyzer.analyze(s);
+		// optional-postfix take-rule dry run
+		this.currentPostfixShape = postfixAnalyzer.analyze(s);
 		if (currentFactorPlan.hasGroups()
 			&& "factor".equals(System.getProperty("antlr.dfa.debug"))) {
 			for (PrefixFactorAnalyzer.Group grp : currentFactorPlan.groups) {
@@ -522,10 +536,12 @@ public class DecisionClassifier {
 			Result hybrid = classifyHybrid(s);
 			if (hybrid != null && hybrid.dfa != null) {
 				if (currentFactorPlan.hasGroups()) hybrid.factorPlan = currentFactorPlan;
+				hybrid.hasPostfixShape = currentPostfixShape != null;
 				return hybrid;
 			}
 		}
 		if (currentFactorPlan.hasGroups()) outcome.factorPlan = currentFactorPlan;
+		outcome.hasPostfixShape = currentPostfixShape != null;
 		return outcome;
 	}
 
@@ -1141,6 +1157,61 @@ public class DecisionClassifier {
 									c.reachesIntoOuterContext, tr, decodeContext(c.context));
 							}
 						}
+					}
+				}
+
+				// Optional-postfix take rule (dry run): the take/skip
+				// conflict of an X Y? decision is a dangling-else shape.
+				// When every token the skip reading consumes is mirrored
+				// into the take structure itself - each descended skip
+				// configuration's deepest context frame is a return into
+				// the decision's block end, i.e. the phantom continuation
+				// funnels back through this decision's own take path, and
+				// nothing was consumed in a foreign frame - then skip is
+				// never uniquely viable and the conflict statically
+				// resolves to take. The mirror check is what excludes the
+				// alias family, where the clause continuations (LIMIT,
+				// FROM, ...) let skip genuinely win. Dry run: count only.
+				if (currentPostfixShape != null
+					&& conflicting.cardinality() == 2
+					&& conflicting.get(1) && conflicting.get(2)) {
+					boolean skipForeign = false;
+					boolean mirrorOk = true;
+					boolean realTake = false;
+					for (ATNConfig c : cs) {
+						if (c.alt == 2) {
+							if ((c.reachesIntoOuterContext & FOREIGN_CONSUME_TAINT) != 0) {
+								skipForeign = true;
+							}
+							if (c.state.ruleIndex != s.ruleIndex
+								&& !bottomFrameIs(c.context,
+									currentPostfixShape.blockEndState,
+									java.util.Collections.newSetFromMap(
+										new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+								mirrorOk = false;
+							}
+						}
+						if (c.alt == 1
+							&& (c.reachesIntoOuterContext & (WIDENED_TAINT|FOREIGN_CONSUME_TAINT)) == 0) {
+							realTake = true;
+						}
+					}
+					if (mirrorOk && !skipForeign && realTake) {
+						res.takeRuleFires++;
+						if ("postfix".equals(System.getProperty("antlr.dfa.debug"))) {
+							System.err.printf("TAKE-FIRE d=%d state=%d exact=%s%n", s.decision, d, exact);
+							for (ATNConfig c : cs) {
+								if (c.alt == 2) {
+									System.err.printf("    skip %s:%d taint=%d ctx=%s%n",
+										g.getRule(c.state.ruleIndex).name, c.state.stateNumber,
+										c.reachesIntoOuterContext, decodeContext(c.context));
+								}
+							}
+						}
+					}
+					else if ("postfix".equals(System.getProperty("antlr.dfa.debug"))) {
+						System.err.printf("TAKE-VETO d=%d state=%d exact=%s foreign=%s mirror=%s realTake=%s%n",
+							s.decision, d, exact, skipForeign, mirrorOk, realTake);
 					}
 				}
 
@@ -1798,6 +1869,32 @@ public class DecisionClassifier {
 	 * an alternative tail (the operand of a simple operator, after which
 	 * the alternative is complete)?
 	 */
+	/**
+	 * Is every context frame adjacent to the empty context (the deepest
+	 * frame of each context branch) a return into {@code endState}? For
+	 * the optional-postfix mirror check: a skip configuration mirrors
+	 * the take reading iff it re-entered the decision through this
+	 * decision's own take path, i.e. its deepest frame's return state is
+	 * the decision block's end state. A branch that reaches the empty
+	 * context without such a frame means the configuration consumed
+	 * tokens fully outside the decision's discipline (foreign).
+	 */
+	private boolean bottomFrameIs(PredictionContext ctx, int endState,
+								  Set<PredictionContext> visited) {
+		if (ctx == null || ctx.isEmpty()) return false;
+		if (!visited.add(ctx)) return true;
+		for (int i = 0; i < ctx.size(); i++) {
+			PredictionContext p = ctx.getParent(i);
+			if (p == null || p.isEmpty()) {
+				if (ctx.getReturnState(i) != endState) return false;
+			}
+			else if (!bottomFrameIs(p, endState, visited)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	private boolean hasPendingPrecReturn(PredictionContext ctx) {
 		if (ctx == null || ctx.isEmpty()) return false;
 		for (int i = 0; i < ctx.size(); i++) {
@@ -2154,6 +2251,15 @@ public class DecisionClassifier {
 				"factorable: %d decisions (%d groups); mask-accepts=%d states; escapes curable=%d%n",
 				factorDecisions, factorGroups, factorMaskStates, factorCured));
 		}
+		int postfixDecisions = 0, takeFires = 0;
+		for (Result r : results) {
+			if (r.hasPostfixShape) postfixDecisions++;
+			takeFires += r.takeRuleFires;
+		}
+		if (postfixDecisions > 0) {
+			buf.append(String.format("take-rule: %d optional-postfix decisions; fires at %d conflict states%n",
+				postfixDecisions, takeFires));
+		}
 
 		int maxKAnyAcyclic = 0;
 		int maxKLLK = 0;
@@ -2205,6 +2311,9 @@ public class DecisionClassifier {
 				   .append(" maskStates=").append(r.factorMaskStates)
 				   .append(" cures=").append(r.factorEscapesCured)
 				   .append(']');
+			}
+			if (r.hasPostfixShape) {
+				buf.append(" [postfix: takeFires=").append(r.takeRuleFires).append(']');
 			}
 			buf.append('\n');
 		}
