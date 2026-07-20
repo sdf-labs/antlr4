@@ -11,6 +11,8 @@ import org.antlr.v4.runtime.atn.ATN;
 import org.antlr.v4.runtime.atn.ATNConfig;
 import org.antlr.v4.runtime.atn.ATNConfigSet;
 import org.antlr.v4.runtime.atn.ATNState;
+import org.antlr.v4.runtime.atn.BlockEndState;
+import org.antlr.v4.runtime.atn.BlockStartState;
 import org.antlr.v4.runtime.atn.DecisionState;
 import org.antlr.v4.runtime.atn.EmptyPredictionContext;
 import org.antlr.v4.runtime.atn.LoopEndState;
@@ -454,6 +456,23 @@ public class DecisionClassifier {
 	 */
 	protected Map<Integer, RuleTransition> callByFollowState;
 
+	/**
+	 * Lazily built map from a rule-call follow state to the minimum
+	 * precedence-guard threshold that reaches the call over epsilon-only
+	 * paths of the same rule (the left-recursion transform places the
+	 * {@code {n >= _p}?} guard at the head of each operator alternative,
+	 * so it reaches the alternative's recursive operand call). Absent
+	 * entry = the call is not guard-reachable - plain or mutual
+	 * recursion outside the operator-loop discipline. Used by the
+	 * widening instrumentation ({@code -Dantlr.dfa.debug=widening}).
+	 */
+	protected Map<Integer, Integer> guardByFollowState;
+
+	/** Widening events in the current construction (debug counter). */
+	protected int widenEvents;
+	/** ...of which the widened call is guard-reachable (debug counter). */
+	protected int widenGuarded;
+
 	/** Analyzer for prefix-factorable decisions (alt-mask dry run). */
 	protected final PrefixFactorAnalyzer factorAnalyzer;
 	/** Analyzer for optional-postfix (X Y?) decisions (take-rule dry run). */
@@ -865,6 +884,68 @@ public class DecisionClassifier {
 		return callByFollowState;
 	}
 
+	/** Lazily built {@link #guardByFollowState}. */
+	protected Map<Integer, Integer> guardByFollowState() {
+		if (guardByFollowState == null) {
+			guardByFollowState = new HashMap<Integer, Integer>();
+			for (ATNState bs0 : atn.states) {
+				if (!(bs0 instanceof BlockStartState)) continue;
+				BlockStartState bs = (BlockStartState)bs0;
+				for (int i = 0; i < bs.getNumberOfTransitions(); i++) {
+					// An operator alternative of the left-recursion
+					// transform opens with the {n >= _p}? guard; find it
+					// by an epsilon-only walk of the alternative head
+					// (stopping at tokens, calls and block ends).
+					Integer headGuard = null;
+					Deque<ATNState> head = new ArrayDeque<ATNState>();
+					Set<ATNState> headSeen = new HashSet<ATNState>();
+					head.add(bs.transition(i).target);
+					while (!head.isEmpty() && headGuard == null) {
+						ATNState s = head.poll();
+						if (!headSeen.add(s) || s instanceof BlockEndState) continue;
+						for (int j = 0; j < s.getNumberOfTransitions(); j++) {
+							Transition t = s.transition(j);
+							if (t instanceof PrecedencePredicateTransition) {
+								headGuard = ((PrecedencePredicateTransition)t).precedence;
+								// mark everything dominated by the guard,
+								// below
+							}
+							else if (t.isEpsilon() && !(t instanceof RuleTransition)) {
+								head.add(t.target);
+							}
+						}
+					}
+					if (headGuard == null) continue;
+					// Everything reachable from the guard without passing
+					// the alternative's own block end is dominated by it:
+					// cross tokens, record (do not descend into) calls,
+					// pass through interior blocks' ends, stop at ours.
+					int n = headGuard;
+					Deque<ATNState> work = new ArrayDeque<ATNState>();
+					Set<ATNState> seen = new HashSet<ATNState>();
+					work.add(bs.transition(i).target);
+					while (!work.isEmpty()) {
+						ATNState s = work.poll();
+						if (!seen.add(s) || s.ruleIndex != bs.ruleIndex) continue;
+						if (s == bs.endState || s instanceof RuleStopState) continue;
+						for (int j = 0; j < s.getNumberOfTransitions(); j++) {
+							Transition t = s.transition(j);
+							if (t instanceof RuleTransition) {
+								int f = ((RuleTransition)t).followState.stateNumber;
+								Integer prev = guardByFollowState.get(f);
+								if (prev == null || n < prev) guardByFollowState.put(f, n);
+							}
+							else {
+								work.add(t.target);
+							}
+						}
+					}
+				}
+			}
+		}
+		return guardByFollowState;
+	}
+
 	/**
 	 * Evaluate a precedence guard {@code precpred(n)} of rule {@code rule}
 	 * against the precedence the rule was entered with in this closure
@@ -983,6 +1064,8 @@ public class DecisionClassifier {
 	protected boolean buildDFA(DecisionState s, Result res, int depthBound) {
 		this.currentDepthBound = depthBound;
 		this.currentDecisionNumber = s.decision;
+		this.widenEvents = 0;
+		this.widenGuarded = 0;
 		this.depthCache = new java.util.IdentityHashMap<PredictionContext, Integer>();
 		Map<Set<ATNConfig>, Integer> stateIds = new HashMap<Set<ATNConfig>, Integer>();
 		List<Set<ATNConfig>> states = new ArrayList<Set<ATNConfig>>();
@@ -1348,6 +1431,12 @@ public class DecisionClassifier {
 			}
 		}
 
+		if (widenEvents > 0 && "widening".equals(System.getProperty("antlr.dfa.debug"))) {
+			System.err.printf("WIDEN d=%d bound=%s events=%d guarded=%d%n",
+				s.decision,
+				depthBound == Integer.MAX_VALUE ? "inf" : String.valueOf(depthBound),
+				widenEvents, widenGuarded);
+		}
 		res.numDfaStates = states.size();
 		if (overflow) {
 			if (System.getProperty("antlr.dfa.debug") != null) {
@@ -1768,6 +1857,14 @@ public class DecisionClassifier {
 				if (widened) {
 					res.usedWidening = true;
 					callee.reachesIntoOuterContext |= WIDENED_TAINT;
+					if ("widening".equals(System.getProperty("antlr.dfa.debug"))) {
+						widenEvents++;
+						boolean guarded = guardByFollowState().containsKey(followStateNumber);
+						if (guarded) widenGuarded++;
+						System.err.printf("WIDEN-EVENT d=%d in=%s call->%s follow=%d guarded=%s%n",
+							currentDecisionNumber, g.getRule(p.ruleIndex).name,
+							g.getRule(rt.target.ruleIndex).name, followStateNumber, guarded);
+					}
 				}
 				closure(callee, configs, busy, res, depth >= 0 ? depth+1 : depth);
 			}
