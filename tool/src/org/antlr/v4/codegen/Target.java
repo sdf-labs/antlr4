@@ -667,6 +667,15 @@ public abstract class Target {
 	public boolean supportsStaticDFA() { return false; }
 
 	/**
+	 * Whether this target implements factored alt-mask prediction
+	 * ("implied left-factoring"): the FactoredAltBlock template and a
+	 * dfaPredictMask runtime helper. Targets without it keep the ordinary
+	 * DFAAltBlock for prefix-factorable decisions (mask-accept states in
+	 * the table defer to adaptivePredict, as escapes do).
+	 */
+	public boolean supportsFactoredAltMask() { return false; }
+
+	/**
 	 * Whether this target's serialized ATN is emitted as a compact
 	 * base64/varint blob (see {@link org.antlr.v4.codegen.CompactSerializer})
 	 * decoded by the target runtime, instead of a plain integer list. The

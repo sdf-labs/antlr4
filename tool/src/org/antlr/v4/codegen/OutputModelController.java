@@ -254,7 +254,10 @@ public class OutputModelController {
 		// block's decision has a validated prefix-factor plan, replace the
 		// choice with a FactoredAltBlock whose group arms execute the
 		// shared prefix and resolve the choice with an LL(1) tail switch.
-		if (primaryStuff instanceof AltBlock) {
+		// Only for targets with mask codegen; others keep the DFAAltBlock
+		// (mask-accept states in its table defer to adaptivePredict).
+		if (primaryStuff instanceof AltBlock
+			&& delegate.getGenerator().getTarget().supportsFactoredAltMask()) {
 			org.antlr.v4.tool.Grammar gg = getGrammar();
 			org.antlr.v4.analysis.PrefixFactorAnalyzer.Plan factorPlan =
 				gg.staticFactorPlans != null
