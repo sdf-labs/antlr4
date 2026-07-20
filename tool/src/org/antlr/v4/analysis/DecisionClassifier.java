@@ -192,6 +192,9 @@ public class DecisionClassifier {
 		/** Dry-run: conflict states where the optional-postfix take rule
 		 *  fires (mirror + vetoes pass): would accept take (alt 1). */
 		public int takeRuleFires;
+		/** Conflict states resolved to min(U) by the uniform-widening
+		 *  trust (every context entry has an assured min attestation). */
+		public int utrustResolutions;
 		/** Dry-run: the decision is an optional-postfix (X Y?) shape. */
 		public boolean hasPostfixShape;
 
@@ -333,6 +336,21 @@ public class DecisionClassifier {
 	protected int currentDepthBound = Integer.MAX_VALUE;
 	/** Per-attempt memo for {@link #contextDepth} (contexts share structure). */
 	protected Map<PredictionContext, Integer> depthCache;
+
+	/**
+	 * Identity set (per construction attempt) of the exact context objects
+	 * created by context widening ({@code Singleton(EMPTY, f)} joints).
+	 * {@link SingletonPredictionContext#create} allocates a fresh object
+	 * per call, so the joint created at the widening site is
+	 * distinguishable by identity from any naturally pushed context with
+	 * the same shape. A configuration whose context contains no joint is
+	 * <em>runtime-faithful</em>: its derivation never passed through
+	 * widening (whatever its sticky {@link #WIDENED_TAINT} says - the bit
+	 * is inherited by descendants whose contexts may since have been
+	 * re-established concretely, e.g. by popping below the joint and
+	 * re-pushing real frames).
+	 */
+	protected Set<PredictionContext> widenedJoints;
 
 	// -- precedence-decision construction mode (see classifyPrecedence) --
 
@@ -1067,6 +1085,9 @@ public class DecisionClassifier {
 		this.widenEvents = 0;
 		this.widenGuarded = 0;
 		this.depthCache = new java.util.IdentityHashMap<PredictionContext, Integer>();
+		this.faithCache = new java.util.IdentityHashMap<PredictionContext, Boolean>();
+		this.widenedJoints =
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>());
 		Map<Set<ATNConfig>, Integer> stateIds = new HashMap<Set<ATNConfig>, Integer>();
 		List<Set<ATNConfig>> states = new ArrayList<Set<ATNConfig>>();
 		List<List<Integer>> edges = new ArrayList<List<Integer>>();
@@ -1328,32 +1349,55 @@ public class DecisionClassifier {
 				// one class-mode shape where it has).
 				boolean untrusted = widenedTainted || (anyBoundary && !allBoundary)
 					|| !trustExactAmbig;
-				if (untrusted) res.approxConflicts.add(conflicting);
-				else if (exact) res.exactAmbigConflicts.add(conflicting);
-				else res.contextSensitiveConflicts.add(conflicting);
 				if (!untrusted && exact) {
 					// trusted exact ambiguity: min-alt resolution matches
 					// both runtime SLL and full-context LL
+					res.exactAmbigConflicts.add(conflicting);
 					acceptAlts.set(d, conflicting.nextSetBit(0));
 				}
-				else if (hybridMode) {
-					// the conflict cannot be resolved statically: defer
-					// this state to adaptivePredict - UNLESS its live
-					// alternatives are covered by one prefix-factor
-					// group, in which case it accepts with the group's
-					// alternative mask (the parser resolves the choice
-					// at the group's tail decision)
-					if (factorGroup != null) {
-						res.factorEscapesCured++;
-						acceptMasks.set(d, altBits(factorGroup.alts));
+				else {
+					int um = utrustMinAlt(cs, conflicting, anyBoundary, allBoundary);
+					if (um > 0) {
+						// uniform-widening trust: min(U) is the runtime's
+						// answer on every real stack (see utrustMinAlt)
+						res.utrustResolutions++;
+						res.exactAmbigConflicts.add(conflicting);
+						acceptAlts.set(d, um);
+						if ("utrust".equals(System.getProperty("antlr.dfa.debug"))) {
+							System.err.printf("UTRUST-RESOLVE d=%d state=%d alt=%d prec=%d%n",
+								s.decision, d, um, precEvalValue);
+							for (ATNConfig c : cs) {
+								System.err.printf("    alt=%d rule=%s state=%d taint=%d faithful=%s ctx=%s%n",
+									c.alt, g.getRule(c.state.ruleIndex).name,
+									c.state.stateNumber, c.reachesIntoOuterContext,
+									runtimeFaithful(c), c.context);
+							}
+						}
+						continue;
 					}
-					else {
-						acceptAlts.set(d, StaticDFA.ESCAPE);
-					}
-					if (System.getProperty("antlr.dfa.debug") != null) {
-						System.err.printf("ESCAPE-CONFLICT d=%d state=%d depth=%d exact=%s hard=%s anyB=%s allB=%s trustEA=%s alts=%s%n",
-							s.decision, d, stateDepth.get(d), exact, widenedTainted,
-							anyBoundary, allBoundary, trustExactAmbig, conflicting);
+					if (untrusted) res.approxConflicts.add(conflicting);
+					else res.contextSensitiveConflicts.add(conflicting);
+					if (hybridMode) {
+						// the conflict cannot be resolved statically:
+						// defer this state to adaptivePredict - UNLESS
+						// its live alternatives are covered by one
+						// prefix-factor group, in which case it accepts
+						// with the group's alternative mask (the parser
+						// resolves the choice at the tail decision)
+						if (factorGroup != null) {
+							res.factorEscapesCured++;
+							acceptMasks.set(d, altBits(factorGroup.alts));
+						}
+						else {
+							acceptAlts.set(d, StaticDFA.ESCAPE);
+						}
+						if ("utrust".equals(System.getProperty("antlr.dfa.debug"))) {
+							utrustProbe(s, d, cs, conflicting, exact, factorGroup != null, anyBoundary, allBoundary);
+						}
+						if (System.getProperty("antlr.dfa.debug") != null) {
+							System.err.printf("ESCAPE-CONFLICT d=%d state=%d depth=%d exact=%s hard=%s anyB=%s allB=%s trustEA=%s alts=%s%n",
+								s.decision, d, stateDepth.get(d), exact, widenedTainted,
+								anyBoundary, allBoundary, trustExactAmbig, conflicting);
 						if ("full".equals(System.getProperty("antlr.dfa.debug"))) {
 							for (ATNConfig c : cs) {
 								System.err.printf("    alt=%d rule=%s state=%d taint=%d ctx=%s%n",
@@ -1362,14 +1406,15 @@ public class DecisionClassifier {
 									c.context);
 							}
 						}
+						}
 					}
-				}
-				else if (abortOnUntrustedConflict) {
-					// not a trusted exact ambiguity: no widening level can
-					// make this decision table-eligible
-					res.numDfaStates = states.size();
-					res.category = Category.CONTEXT_SENSITIVE;
-					return false;
+					else if (abortOnUntrustedConflict) {
+						// not a trusted exact ambiguity: no widening level
+						// can make this decision table-eligible
+						res.numDfaStates = states.size();
+						res.category = Category.CONTEXT_SENSITIVE;
+						return false;
+					}
 				}
 				continue;
 			}
@@ -1849,6 +1894,7 @@ public class DecisionClassifier {
 					// wildcard context
 					widened = true;
 					newCtx = SingletonPredictionContext.create(EmptyPredictionContext.Instance, followStateNumber);
+					widenedJoints.add(newCtx);
 				}
 				else {
 					newCtx = SingletonPredictionContext.create(config.context, followStateNumber);
@@ -2100,6 +2146,184 @@ public class DecisionClassifier {
 	}
 
 	/** Does a return state appear anywhere in a (possibly DAG-shaped) context? */
+	/**
+	 * Uniform-widening trust probe ({@code -Dantlr.dfa.debug=utrust}):
+	 * classifies an escaping conflict by whether it could resolve to
+	 * min(U), the minimum of the conflicting union, matching the runtime
+	 * on every real stack.
+	 *
+	 * <p>L1 (common-min): every (state, ctx) entry contains min(U) -
+	 * every real stack's live-alt set contains min(U), so both SLL and
+	 * full-context prediction answer min(U) (unique or min-of-conflict).
+	 * L2 (min-shadowed): an entry lacking min(U) is harmless when a
+	 * min(U) config at the same ATN state carries a widened context that
+	 * is a top-frames prefix of the entry's context with a wildcard tail
+	 * - its real-stack set then contains the entry's, so min(U) is live
+	 * wherever the entry is (soundness still requires the widened config
+	 * to be realizable through the entry's continuation; the probe only
+	 * measures the shape).</p>
+	 */
+	protected void utrustProbe(DecisionState s, int d, ATNConfigSet cs, BitSet conflicting,
+							   boolean exact, boolean masked,
+							   boolean anyBoundary, boolean allBoundary) {
+		Map<Integer, Map<PredictionContext, BitSet>> byStateCtx = groupByStateCtx(cs);
+		int m = conflicting.nextSetBit(0);
+		int entries = 0, loneMin = 0;
+		for (Map.Entry<Integer, Map<PredictionContext, BitSet>> e1 : byStateCtx.entrySet()) {
+			for (Map.Entry<PredictionContext, BitSet> e2 : e1.getValue().entrySet()) {
+				entries++;
+				if (!e2.getValue().get(m)) loneMin++;
+			}
+		}
+		System.err.printf("UTRUST d=%d state=%d exact=%s masked=%s entries=%d union=%s loneMin=%d verdict=%s%n",
+			s.decision, d, exact, masked, entries, conflicting, loneMin,
+			utrustMinAlt(cs, conflicting, anyBoundary, allBoundary) > 0 ? "RESOLVABLE" : "no");
+	}
+
+	/** Group a configuration set's alternatives by (ATN state, context). */
+	private static Map<Integer, Map<PredictionContext, BitSet>> groupByStateCtx(ATNConfigSet cs) {
+		Map<Integer, Map<PredictionContext, BitSet>> byStateCtx =
+			new LinkedHashMap<Integer, Map<PredictionContext, BitSet>>();
+		for (ATNConfig c : cs) {
+			BitSet alts = byStateCtx
+				.computeIfAbsent(c.state.stateNumber, k -> new LinkedHashMap<PredictionContext, BitSet>())
+				.computeIfAbsent(c.context, k -> new BitSet());
+			alts.set(c.alt);
+		}
+		return byStateCtx;
+	}
+
+	/**
+	 * Uniform-widening trust: the minimum of the conflicting union is the
+	 * runtime's answer on every real stack - and may therefore be
+	 * accepted statically - when every (state, ctx) entry of the conflict
+	 * has min(U) <em>assured</em>: some same-state min(U) configuration
+	 * whose derivation is tail-independent ({@link #runtimeFaithful} - no
+	 * widening joint in its context - and no boundary pop or foreign
+	 * consumption, so it is realizable on every stack matching its
+	 * context) and whose context covers the entry's, either exactly
+	 * (common-min) or as a wildcard-tailed prefix (a shadow: on any stack
+	 * where the entry is live the shadow is live too, so min(U) can never
+	 * be absent from the runtime's live set). Entries matched by no real
+	 * stack and inputs with an empty live set are error paths, where
+	 * static/adaptive divergence is accepted. Returns the resolvable
+	 * alternative, or 0 when some entry lacks assurance.
+	 *
+	 * <p>Boundary usage must be uniform for the same reason the
+	 * exact-ambiguity trust requires it: a wildcard-tailed entry stands
+	 * for a FAMILY of real stacks, and only when every configuration
+	 * popped through the decision boundary (or none did) does the real
+	 * outer context substitute into all alternatives identically. Mixed
+	 * usage is the dangling-else shape: the iterate lineage dies in the
+	 * outer frames on some inputs ({@code a,c>>x} in
+	 * LeftRecursion/ReturnValueAndActionsList1_2, where alt 1 is
+	 * boundary-free and alt 2 boundary-tainted), so closure-liveness is
+	 * not input-viability and min-alt is not behavior-preserving.</p>
+	 */
+	protected int utrustMinAlt(ATNConfigSet cs, BitSet conflicting,
+							   boolean anyBoundary, boolean allBoundary) {
+		if (anyBoundary && !allBoundary) return 0;
+		int m = conflicting.nextSetBit(0);
+		// clean min(U) attestations by state, computed once per conflict:
+		// runtime-faithful, boundary- and foreign-free min(U) configs
+		Map<Integer, List<ATNConfig>> cleanMByState = new HashMap<Integer, List<ATNConfig>>();
+		for (ATNConfig c : cs) {
+			if (c.alt == m
+				&& (c.reachesIntoOuterContext & (BOUNDARY_TAINT|FOREIGN_CONSUME_TAINT)) == 0
+				&& runtimeFaithful(c)) {
+				cleanMByState.computeIfAbsent(c.state.stateNumber, k -> new ArrayList<ATNConfig>()).add(c);
+			}
+		}
+		if (cleanMByState.isEmpty()) return 0;
+		for (Map.Entry<Integer, Map<PredictionContext, BitSet>> e1 : groupByStateCtx(cs).entrySet()) {
+			List<ATNConfig> attestations = cleanMByState.get(e1.getKey());
+			if (attestations == null) return 0;
+			for (PredictionContext entryCtx : e1.getValue().keySet()) {
+				boolean assured = false;
+				for (ATNConfig c : attestations) {
+					if (topPrefixWildcardMatch(c.context, entryCtx)) {
+						assured = true;
+						break;
+					}
+				}
+				if (!assured) return 0;
+			}
+		}
+		return m;
+	}
+
+	/**
+	 * Is {@code shadow}'s frame chain a top-frames prefix of
+	 * {@code exact}'s, ending in the wildcard context - i.e. is
+	 * {@code shadow}'s set of real stacks a superset of {@code exact}'s?
+	 * Merged contexts are set unions, so the superset relation must hold
+	 * branch by branch: EVERY branch of {@code exact} must be covered
+	 * (a stack arriving through an uncovered branch is matched by the
+	 * entry but not by the shadow - min(U) is not assured live on it;
+	 * covering only the {@code 16 29 $} branch of {@code [16 29 $, 40 $]}
+	 * is what misparsed {@code x BETWEEN y -> a AND b AND c}), while ANY
+	 * branch of {@code shadow} may establish the coverage of one.
+	 */
+	protected static boolean topPrefixWildcardMatch(PredictionContext shadow, PredictionContext exact) {
+		if (exact != null && exact.size() > 1) {
+			for (int j = 0; j < exact.size(); j++) {
+				if (!topPrefixWildcardMatch(shadow, ctxBranch(exact, j))) return false;
+			}
+			return true;
+		}
+		if (shadow == null || shadow.isEmpty()) return true;
+		if (shadow.size() > 1) {
+			for (int i = 0; i < shadow.size(); i++) {
+				if (topPrefixWildcardMatch(ctxBranch(shadow, i), exact)) return true;
+			}
+			return false;
+		}
+		if (exact == null || exact.isEmpty()) return false;
+		int rs = shadow.getReturnState(0);
+		if (rs == PredictionContext.EMPTY_RETURN_STATE) return true;
+		if (exact.getReturnState(0) == PredictionContext.EMPTY_RETURN_STATE) return false;
+		return rs == exact.getReturnState(0)
+			&& topPrefixWildcardMatch(shadow.getParent(0), exact.getParent(0));
+	}
+
+	private static PredictionContext ctxBranch(PredictionContext ctx, int i) {
+		PredictionContext p = ctx.getParent(i);
+		if (p == null) p = EmptyPredictionContext.Instance;
+		return SingletonPredictionContext.create(p, ctx.getReturnState(i));
+	}
+
+	/**
+	 * Is this configuration's context free of widening joints - i.e. is
+	 * its derivation one the runtime's own (widening-free) SLL closure
+	 * also produces? See {@link #widenedJoints}.
+	 */
+	protected boolean runtimeFaithful(ATNConfig c) {
+		if (widenedJoints.isEmpty() || c.context == null) return true;
+		Boolean cached = faithCache.get(c.context);
+		if (cached != null) return cached;
+		Set<PredictionContext> visited =
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>());
+		Deque<PredictionContext> work = new ArrayDeque<PredictionContext>();
+		work.add(c.context);
+		boolean faithful = true;
+		while (!work.isEmpty()) {
+			PredictionContext ctx = work.poll();
+			if (ctx == null || !visited.add(ctx)) continue;
+			if (widenedJoints.contains(ctx)) { faithful = false; break; }
+			for (int i = 0; i < ctx.size(); i++) {
+				PredictionContext p = ctx.getParent(i);
+				if (p != null) work.add(p);
+			}
+		}
+		// cache the queried root only: a visited node's own subdag may be
+		// clean even when a sibling branch carries the joint
+		faithCache.put(c.context, faithful);
+		return faithful;
+	}
+
+	/** Per-attempt memo for {@link #runtimeFaithful} (contexts share structure). */
+	protected Map<PredictionContext, Boolean> faithCache;
+
 	protected static boolean hasReturnState(PredictionContext ctx, int returnStateNumber) {
 		return hasReturnState(ctx, returnStateNumber,
 			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()));
@@ -2377,6 +2601,11 @@ public class DecisionClassifier {
 		if (postfixDecisions > 0) {
 			buf.append(String.format("take-rule: %d optional-postfix decisions; fires at %d conflict states%n",
 				postfixDecisions, takeFires));
+		}
+		int utrust = 0;
+		for (Result r : results) utrust += r.utrustResolutions;
+		if (utrust > 0) {
+			buf.append(String.format("utrust: %d conflict states resolved to min-alt%n", utrust));
 		}
 
 		int maxKAnyAcyclic = 0;
