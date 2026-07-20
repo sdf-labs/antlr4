@@ -281,8 +281,8 @@ public class DecisionClassifier {
 	 * queue is FIFO, so construction is breadth-first by lookahead depth
 	 * and the emitted prefix is exactly the shallowest - hottest - states.
 	 */
-	public int hybridDepthCap = 4;
-	public int hybridStateCap = 64;
+	public int hybridDepthCap = Integer.parseInt(System.getProperty("antlr.dfa.hybridDepthCap", "4"));
+	public int hybridStateCap = Integer.parseInt(System.getProperty("antlr.dfa.hybridStateCap", "64"));
 	/**
 	 * Minimum start-state coverage (see {@link Result#coverage}) for a
 	 * hybrid table to be worth its size: below this, nearly every
@@ -1160,18 +1160,25 @@ public class DecisionClassifier {
 					}
 				}
 
-				// Optional-postfix take rule (dry run): the take/skip
-				// conflict of an X Y? decision is a dangling-else shape.
-				// When every token the skip reading consumes is mirrored
-				// into the take structure itself - each descended skip
-				// configuration's deepest context frame is a return into
-				// the decision's block end, i.e. the phantom continuation
-				// funnels back through this decision's own take path, and
-				// nothing was consumed in a foreign frame - then skip is
-				// never uniquely viable and the conflict statically
-				// resolves to take. The mirror check is what excludes the
-				// alias family, where the clause continuations (LIMIT,
-				// FROM, ...) let skip genuinely win. Dry run: count only.
+				// Optional-postfix take rule: the take/skip conflict of an
+				// X Y? decision is a dangling-else shape. When every token
+				// the skip reading consumes is mirrored into the take
+				// structure itself - each descended skip configuration's
+				// deepest context frame is a return into the decision's
+				// block end (the phantom continuation funnels back through
+				// this decision's own take path), nothing was consumed in
+				// a foreign frame, and take viability is attested by a
+				// non-widened, non-foreign config - then skip is never
+				// uniquely viable: take's continuation after the optional
+				// is identical to skip's (both reach the same block end),
+				// and the mirrored re-descents consume the same tokens, so
+				// whenever the adaptive engine terminates - unique take,
+				// or an ambiguity resolved to the minimum alternative -
+				// it answers take. The starvation check (in the analyzer)
+				// excludes X Y? Z shapes where a mandatory Z can be served
+				// by the skipped input (TRIM, namedParameter); the mirror
+				// check excludes the alias family, whose clause
+				// continuations (LIMIT, FROM, ...) let skip genuinely win.
 				if (currentPostfixShape != null
 					&& conflicting.cardinality() == 2
 					&& conflicting.get(1) && conflicting.get(2)) {
@@ -1198,6 +1205,8 @@ public class DecisionClassifier {
 					}
 					if (mirrorOk && !skipForeign && realTake) {
 						res.takeRuleFires++;
+						res.exactAmbigConflicts.add(conflicting);
+						acceptAlts.set(d, 1);
 						if ("postfix".equals(System.getProperty("antlr.dfa.debug"))) {
 							System.err.printf("TAKE-FIRE d=%d state=%d exact=%s%n", s.decision, d, exact);
 							for (ATNConfig c : cs) {
@@ -1208,6 +1217,7 @@ public class DecisionClassifier {
 								}
 							}
 						}
+						continue;
 					}
 					else if ("postfix".equals(System.getProperty("antlr.dfa.debug"))) {
 						System.err.printf("TAKE-VETO d=%d state=%d exact=%s foreign=%s mirror=%s realTake=%s%n",
