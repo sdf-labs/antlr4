@@ -99,5 +99,8 @@ public class RustTarget extends Target {
 	public boolean supportsStaticDFA() { return true; }
 
 	@Override
+	public boolean supportsFactoredAltMask() { return true; }
+
+	@Override
 	public boolean isATNSerializedAsBase64VarInts() { return true; }
 }

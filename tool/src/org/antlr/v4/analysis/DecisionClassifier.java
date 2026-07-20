@@ -2149,10 +2149,21 @@ public class DecisionClassifier {
 			for (PrefixFactorAnalyzer.Group grp : plan.groups) {
 				int ruleIndex = g.atn.decisionToState.get(plan.decision).ruleIndex;
 				int sharedRule = grp.prefix.get(grp.prefix.size()-1).id;
-				org.antlr.v4.runtime.atn.BasicState tail =
-					new org.antlr.v4.runtime.atn.BasicState();
+				// The tail state fans out (epsilon) to every member's tail
+				// start, so it must be a real decision state: non-decision
+				// states may only have one transition (ATNDeserializer's
+				// verifyATN). It never serves as a prediction call site.
+				org.antlr.v4.runtime.atn.BasicBlockStartState tail =
+					new org.antlr.v4.runtime.atn.BasicBlockStartState();
 				tail.ruleIndex = ruleIndex;
 				g.atn.addState(tail);
+				org.antlr.v4.runtime.atn.BlockEndState tailEnd =
+					new org.antlr.v4.runtime.atn.BlockEndState();
+				tailEnd.ruleIndex = ruleIndex;
+				g.atn.addState(tailEnd);
+				tail.endState = tailEnd;
+				tailEnd.startState = tail;
+				g.atn.defineDecisionState(tail);
 				for (int alt = grp.alts.nextSetBit(0); alt >= 0; alt = grp.alts.nextSetBit(alt+1)) {
 					tail.addTransition(new org.antlr.v4.runtime.atn.EpsilonTransition(
 						g.atn.states.get(grp.tailStartState.get(alt))));
