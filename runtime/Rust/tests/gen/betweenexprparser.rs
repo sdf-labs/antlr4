@@ -854,7 +854,7 @@ where
 			        recog.v_rec(0)?;
 			        recog.base.set_state(16);
 			        recog.err_handler.sync(&mut recog.base)?;
-			        match { let _sdp = recog.base.dfa_predict(0)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(0,&mut recog.base)? } else { _sdp } } {
+			        match { let _sdp = recog.base.dfa_predict(0)?; _sdp } {
 			        	x if x == 1 =>{
 			        		{
 			        		/*InvokeRule pred*/
@@ -1673,7 +1673,7 @@ where
 // the serialized ATN is followed by 9 static SLL prediction tables (-Xstatic-dfa):
 //   decision 3: precedence-dispatched over cutoffs [1, 2], tables [4 5 6]
 //   decision 7: precedence-dispatched over cutoffs [2, 3], tables [7 8 6]
-//   decision 0: LL(k), k=1, 9 states, 3 adaptive escapes
+//   decision 0: LL(k), k=1, 9 states
 //   decision 2: LL(k), k=1, 3 states
 //   decision 6: LL(k), k=1, 3 states
 //   decision 8: LL(k), k=2, 13 states
@@ -1697,7 +1697,7 @@ static _serializedATN: [&'static str; 19] = [
     "FAYAAGJkDgIAAGRuBgwGCGZoFAQAAGhqDgQAAGpuBgwGBmxgAgAAAGxmAgAAAG50AgAAAHBsAgAAAHBy",
     "AgAAAHIOAgAAAHRwAgAAAHaKAQoeAAB4igEKIAAAenwKGAAAfH4GBAIAfoABChoAAIABigECAAAAggGE",
     "AQoeAACEAYYBChwAAIYBigEGBAIAiAF2AgAAAIgBeAIAAACIAXoCAAAAiAGCAQIAAACKARICAAAAEiAo",
-    "ODxEVmxwiAEMEhIAEjAABAEEBAEBBAQEAAAAAAAAAAAAMDAwMDAwMDAwAQECAgIEBAQGBgYICAgKCg4M",
+    "ODxEVmxwiAEMEhIAEjAABAIEBAICBAQEAAAAAAAAAAAAMDAwMDAwMDAwAQECAgIEBAQGBgYICAgKCg4M",
     "EBYOGhoQAAQGDAACBAAAAAAMDAwEBAIGBgQADAYMAAIEAAAAAAwMDBASAhQWBAAQGkgABgAEAgICAgIC",
     "AgIIAAACAAAAAAAAAAAAAAASEkhISEhISEhISEhIGBgCHh4EICAGAQEIAgIKBAQMBgYOCAgQCg4SEBYU",
     "GhoWHBwYAAESMAAEBAECBAQEBAQAAAAAAAAAAAAwMDAwMDAwMDABAQICAgQEBAYGBggICAoKDgwQFg4a",
