@@ -199,12 +199,13 @@ fn test_escape_corners() {
     }
 }
 
-/// The static parser must contain a hybrid table (adaptive escapes) and a
-/// precedence dispatch; the adaptive twin must contain neither.
+/// The static parser must contain a static table with mask accepts (the
+/// shared-descent machinery engages on this grammar) and a precedence
+/// dispatch; the adaptive twin must contain neither.
 #[test]
 fn test_generated_shape() {
     let stat = include_str!("gen/fuzzexprparser.rs");
-    assert!(stat.contains("adaptive escapes"), "expected a hybrid table");
+    assert!(stat.contains("mask accepts"), "expected mask-accept states");
     assert!(
         stat.contains("precedence-dispatched"),
         "expected a dispatch"
