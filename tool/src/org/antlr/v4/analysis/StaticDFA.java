@@ -44,6 +44,16 @@ public class StaticDFA {
 		return false;
 	}
 
+	/** True if any state of this table is a mask-accept state: a runtime
+	 *  prediction driven by it can receive an alternative mask it cannot
+	 *  execute (no factored arm), and must defer to {@code adaptivePredict}. */
+	public boolean hasMasks() {
+		for (long m : acceptMasks) {
+			if (m != 0) return true;
+		}
+		return false;
+	}
+
 	public final int decision;
 	public final int numStates;
 	/** Predicted alternative per state; 0 = not an accept state; {@link #ESCAPE} = escape. */

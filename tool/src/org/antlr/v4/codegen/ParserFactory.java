@@ -279,7 +279,7 @@ public class ParserFactory extends DefaultOutputModelFactory {
 		}
 		org.antlr.v4.analysis.StaticDFA dfa =
 			g.staticDecisionDFAs != null ? g.staticDecisionDFAs.get(decision) : null;
-		return dfa != null && dfa.hasEscapes();
+		return dfa != null && (dfa.hasEscapes() || dfa.hasMasks());
 	}
 
 	/** Like getComplexEBNFBlock but driving the decision from a static DFA table. */

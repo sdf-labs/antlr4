@@ -195,6 +195,9 @@ public class DecisionClassifier {
 		/** Conflict states resolved to min(U) by the uniform-widening
 		 *  trust (every context entry has an assured min attestation). */
 		public int utrustResolutions;
+		/** Escape states accepting a shared-descent group's alternative
+		 *  mask (every live configuration starts via the group's rule). */
+		public int descentMaskStates;
 		/** Dry-run: the decision is an optional-postfix (X Y?) shape. */
 		public boolean hasPostfixShape;
 
@@ -491,6 +494,25 @@ public class DecisionClassifier {
 	/** ...of which the widened call is guard-reachable (debug counter). */
 	protected int widenGuarded;
 
+	/** Lazily built shared-descent dry-run analyzer. */
+	protected SharedDescentAnalyzer descentAnalyzer;
+	/** The shared-descent plan of the decision being classified. */
+	protected SharedDescentAnalyzer.Plan currentDescentPlan;
+
+	/** Do all live configurations of this state genuinely start via R? */
+	protected boolean allStartViaR(Set<ATNConfig> configs, DecisionState s, int ruleR) {
+		for (ATNConfig c : configs) {
+			if (!descentAnalyzer().startsViaR(c, s, ruleR)) return false;
+		}
+		return true;
+	}
+	protected SharedDescentAnalyzer descentAnalyzer() {
+		if (descentAnalyzer == null) {
+			descentAnalyzer = new SharedDescentAnalyzer(g, atn, callByFollowState());
+		}
+		return descentAnalyzer;
+	}
+
 	/** Analyzer for prefix-factorable decisions (alt-mask dry run). */
 	protected final PrefixFactorAnalyzer factorAnalyzer;
 	/** Analyzer for optional-postfix (X Y?) decisions (take-rule dry run). */
@@ -523,6 +545,7 @@ public class DecisionClassifier {
 		Result res = new Result(s);
 		this.currentFactorPlan = null;
 		this.currentPostfixShape = null;
+		this.currentDescentPlan = null;
 		if (s.nonGreedy) {
 			res.category = Category.NON_GREEDY;
 			return res;
@@ -540,6 +563,8 @@ public class DecisionClassifier {
 		// alt-mask dry run: compute the prefix-factor plan up front; the
 		// construction attempts count the states it would resolve.
 		this.currentFactorPlan = factorAnalyzer.analyze(s);
+		// semantic shared-descent plan (rule-level factoring)
+		this.currentDescentPlan = descentAnalyzer().buildPlan(s);
 		// optional-postfix take-rule dry run
 		this.currentPostfixShape = postfixAnalyzer.analyze(s);
 		if (currentFactorPlan.hasGroups()
@@ -1389,7 +1414,23 @@ public class DecisionClassifier {
 							acceptMasks.set(d, altBits(factorGroup.alts));
 						}
 						else {
-							acceptAlts.set(d, StaticDFA.ESCAPE);
+							SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
+								&& !currentFactorPlan.hasGroups()
+								? currentDescentPlan.groupCovering(alts) : null;
+							if (descentGroup != null && allStartViaR(configs, s, descentGroup.rule)) {
+								res.descentMaskStates++;
+								res.approxConflicts.remove(conflicting);
+								res.contextSensitiveConflicts.remove(conflicting);
+								res.exactAmbigConflicts.add(conflicting);
+								acceptMasks.set(d, altBits(descentGroup.alts));
+								if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+									System.err.printf("DESCENT-MASK d=%d state=%d rule=%s alts=%s%n",
+										s.decision, d, g.getRule(descentGroup.rule).name, descentGroup.alts);
+								}
+							}
+							else {
+								acceptAlts.set(d, StaticDFA.ESCAPE);
+							}
 						}
 						if ("utrust".equals(System.getProperty("antlr.dfa.debug"))) {
 							utrustProbe(s, d, cs, conflicting, exact, factorGroup != null, anyBoundary, allBoundary);
@@ -1398,14 +1439,14 @@ public class DecisionClassifier {
 							System.err.printf("ESCAPE-CONFLICT d=%d state=%d depth=%d exact=%s hard=%s anyB=%s allB=%s trustEA=%s alts=%s%n",
 								s.decision, d, stateDepth.get(d), exact, widenedTainted,
 								anyBoundary, allBoundary, trustExactAmbig, conflicting);
-						if ("full".equals(System.getProperty("antlr.dfa.debug"))) {
-							for (ATNConfig c : cs) {
-								System.err.printf("    alt=%d rule=%s state=%d taint=%d ctx=%s%n",
-									c.alt, g.getRule(c.state.ruleIndex).name,
-									c.state.stateNumber, c.reachesIntoOuterContext,
-									c.context);
+							if ("full".equals(System.getProperty("antlr.dfa.debug"))) {
+								for (ATNConfig c : cs) {
+									System.err.printf("    alt=%d rule=%s state=%d taint=%d ctx=%s%n",
+										c.alt, g.getRule(c.state.ruleIndex).name,
+										c.state.stateNumber, c.reachesIntoOuterContext,
+										c.context);
+								}
 							}
-						}
 						}
 					}
 					else if (abortOnUntrustedConflict) {
@@ -1434,7 +1475,20 @@ public class DecisionClassifier {
 					acceptMasks.set(d, altBits(factorGroup.alts));
 				}
 				else {
-					acceptAlts.set(d, StaticDFA.ESCAPE);
+					SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
+						&& !currentFactorPlan.hasGroups()
+						? currentDescentPlan.groupCovering(alts) : null;
+					if (descentGroup != null && allStartViaR(configs, s, descentGroup.rule)) {
+						res.descentMaskStates++;
+						acceptMasks.set(d, altBits(descentGroup.alts));
+						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+							System.err.printf("DESCENT-MASK d=%d state=%d rule=%s alts=%s%n",
+								s.decision, d, g.getRule(descentGroup.rule).name, descentGroup.alts);
+						}
+					}
+					else {
+						acceptAlts.set(d, StaticDFA.ESCAPE);
+					}
 				}
 				continue;
 			}
@@ -2606,6 +2660,15 @@ public class DecisionClassifier {
 		for (Result r : results) utrust += r.utrustResolutions;
 		if (utrust > 0) {
 			buf.append(String.format("utrust: %d conflict states resolved to min-alt%n", utrust));
+		}
+		int descentPlans = 0, descentMasks = 0;
+		for (Result r : results) {
+			if (r.descentMaskStates > 0) descentPlans++;
+			descentMasks += r.descentMaskStates;
+		}
+		if (descentMasks > 0) {
+			buf.append(String.format("descent: %d decisions with shared-descent groups; %d mask-accept states%n",
+				descentPlans, descentMasks));
 		}
 
 		int maxKAnyAcyclic = 0;
