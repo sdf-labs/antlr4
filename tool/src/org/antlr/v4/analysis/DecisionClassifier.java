@@ -200,6 +200,8 @@ public class DecisionClassifier {
 		public int descentMaskStates;
 		/** Dry-run: the decision is an optional-postfix (X Y?) shape. */
 		public boolean hasPostfixShape;
+		/** The decision's shared-descent plan, when it has groups. */
+		public SharedDescentAnalyzer.Plan descentPlan;
 
 		public Result(DecisionState decisionState) {
 			this.decisionState = decisionState;
@@ -598,11 +600,13 @@ public class DecisionClassifier {
 			Result hybrid = classifyHybrid(s);
 			if (hybrid != null && hybrid.dfa != null) {
 				if (currentFactorPlan.hasGroups()) hybrid.factorPlan = currentFactorPlan;
+				if (currentDescentPlan.hasGroups()) hybrid.descentPlan = currentDescentPlan;
 				hybrid.hasPostfixShape = currentPostfixShape != null;
 				return hybrid;
 			}
 		}
 		if (currentFactorPlan.hasGroups()) outcome.factorPlan = currentFactorPlan;
+		if (currentDescentPlan.hasGroups()) outcome.descentPlan = currentDescentPlan;
 		outcome.hasPostfixShape = currentPostfixShape != null;
 		return outcome;
 	}
@@ -2492,6 +2496,7 @@ public class DecisionClassifier {
 		Map<Integer, PrecedenceStaticDFA> precTables = new LinkedHashMap<Integer, PrecedenceStaticDFA>();
 		Map<Integer, PrefixFactorAnalyzer.Plan> factorPlans =
 			new LinkedHashMap<Integer, PrefixFactorAnalyzer.Plan>();
+		Map<Integer, SharedDescentAnalyzer.Plan> descentPlans = new HashMap<Integer, SharedDescentAnalyzer.Plan>();
 		for (DecisionState s : g.atn.decisionToState) {
 			// the LL(1) fast path already covers disjoint decisions
 			if (g.decisionLOOK != null && s.decision < g.decisionLOOK.size()
@@ -2508,10 +2513,19 @@ public class DecisionClassifier {
 			if (r.factorPlan != null && r.factorPlan.hasGroups()) {
 				factorPlans.put(s.decision, r.factorPlan);
 			}
+			if (r.descentPlan != null && r.descentPlan.hasGroups()) {
+				descentPlans.put(s.decision, r.descentPlan);
+			}
 		}
 		g.staticDecisionDFAs = tables;
 		g.staticPrecedenceDFAs = precTables;
 		g.staticFactorPlans = factorPlans;
+		g.staticDescentPlans = descentPlans;
+		for (SharedDescentAnalyzer.Plan plan : descentPlans.values()) {
+			for (SharedDescentAnalyzer.Group grp : plan.groups) {
+				if (grp.codegenable) g.getRule(grp.rule).resumeTarget = true;
+			}
+		}
 		addSyntheticContinuationStates(g, factorPlans);
 	}
 

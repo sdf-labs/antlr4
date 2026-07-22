@@ -460,32 +460,69 @@ where
 		let result: Result<(), ANTLRError> = (|| {
 			recog.base.set_state(30);
 			recog.err_handler.sync(&mut recog.base)?;
-			match { let _sdp = recog.base.dfa_predict(2)?; if _sdp == INVALID_ALT { recog.get_interpreter().adaptive_predict(2,&mut recog.base)? } else { _sdp } } {
-				1 =>{
-					/*------- Outer Most Alt 1 -------*/
-					unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
-					{
-					/*InvokeRule e*/
-					recog.base.set_state(25);
-					recog.e_rec(0)?;
-					recog.base.set_state(26);
-					recog.base.match_token(FuzzExpr_T__2,&mut recog.err_handler)?;
-					/*InvokeRule name*/
-					recog.base.set_state(27);
-					recog.name()?;
-					}
+			match { let _m = recog.base.dfa_predict_mask(2)?;
+			  match _m {
+			    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    x if x == 0x3 && !recog.base.resume_active() => {
+			        let _pos0 = recog.input.index();
+			        recog.base.set_state(25);
+			        recog.base.begin_mute();
+			        let _errs = recog.base.syntax_error_count();
+			        match recog.e() {
+			            Err(e) if !e.is_recoverable() => return Err(e),
+			            Err(_) => {
+			                recog.base.end_mute();
+			                recog.input.seek(_pos0);
+			                1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			            },
+			            Ok(_node) => {
+			                recog.base.end_mute();
+			                if recog.base.syntax_error_count() != _errs {
+			                    // errorful neutral parse: throw its result away and
+			                    // defer (muted, so no spurious reports escaped)
+			                    recog.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node));
+			                    recog.input.seek(_pos0);
+			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                }
+			                else {
+			                    // the tail token decides on the post-prefix stream;
+			                    // only then rewind into resume mode
+			                    let _tailbit = match recog.input.la(1) {
+			FuzzExpr_T__2 => 0x1,
+			                        _ => 0x2
+			                    };
+			                    recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e, _pos0);
+			                    _tailbit
+			                }
+			            },
+			        }
+			    },
+			    0x3 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    m => m,
+			  } } {
+			x if x == 0x1 =>{
+				/*------- Outer Most Alt 1 -------*/
+				unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
+				{
+				/*InvokeRule e*/
+				recog.base.set_state(25);
+				recog.e_rec(0)?;
+				recog.base.set_state(26);
+				recog.base.match_token(FuzzExpr_T__2,&mut recog.err_handler)?;
+				/*InvokeRule name*/
+				recog.base.set_state(27);
+				recog.name()?;
 				}
-			,
-				2 =>{
-					/*------- Outer Most Alt 2 -------*/
-					unsafe { recog.ctx_mut().unwrap().set_alt_number(2); }
-					{
-					/*InvokeRule e*/
-					recog.base.set_state(29);
-					recog.e_rec(0)?;
-					}
+			},
+			x if x == 0x2 =>{
+				/*------- Outer Most Alt 2 -------*/
+				unsafe { recog.ctx_mut().unwrap().set_alt_number(2); }
+				{
+				/*InvokeRule e*/
+				recog.base.set_state(29);
+				recog.e_rec(0)?;
 				}
-
+			}
 				_ => {}
 			}
 			Ok(())
@@ -826,12 +863,20 @@ where
 {
     #[inline]
 	pub fn  e(&mut self,) -> Result<&'arena EContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
-		self.e_rec(0)
+		{
+				    let recog = &mut *self;
+				    if let Some(_node) = recog.base.resume_take(RULE_e) {
+				        return Ok(_node.as_rule_context().unwrap());
+				    }
+				}self.e_rec(0)
 	}
 
 	fn e_rec(&mut self, _p: i32) -> Result<&'arena EContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
+		if let Some(_node) = recog.base.resume_take(RULE_e) {
+		    return Ok(_node.as_rule_context().unwrap());
+		}
 		let _parentctx = recog.base.take_ctx();
 		let _parentState = recog.base.get_state();
 		recog.base.enter_recursion_rule(EContextExt::create(recog.get_arena(), _parentctx, recog.get_state())?, 8, RULE_e, _p)?;

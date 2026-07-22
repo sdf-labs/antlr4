@@ -34,6 +34,7 @@ import static org.antlr.v4.parse.ANTLRParser.*;
 public class RuleFunction extends OutputModelObject {
 	public final String name;
 	public final String escapedName;
+	public final boolean resumeTarget;
 	public final List<String> modifiers;
 	public String ctxType;
 	public final Collection<String> ruleLabels;
@@ -58,6 +59,7 @@ public class RuleFunction extends OutputModelObject {
 		super(factory);
 		this.name = r.name;
 		this.escapedName = factory.getGenerator().getTarget().escapeIfNeeded(r.name);
+		this.resumeTarget = r.resumeTarget;
 		this.rule = r;
 		modifiers = Utils.nodesToStrings(r.modifiers);
 

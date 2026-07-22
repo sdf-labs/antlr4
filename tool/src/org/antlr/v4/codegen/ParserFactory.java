@@ -204,8 +204,20 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			c = getLL1ChoiceBlock(blkAST, alts);
 		}
 		else if ( hasStaticDFA(decision) ) {
-			c = new DFAAltBlock(this, blkAST, alts);
-			c.tableCanDefer = staticDFACanDefer(decision);
+			DFAAltBlock dfaBlock = new DFAAltBlock(this, blkAST, alts);
+			dfaBlock.tableCanDefer = staticDFACanDefer(decision);
+			org.antlr.v4.analysis.SharedDescentAnalyzer.Plan descentPlan =
+				g.staticDescentPlans != null ? g.staticDescentPlans.get(decision) : null;
+			org.antlr.v4.codegen.model.DescentAltBlock descentBlock =
+				descentPlan != null && gen.getTarget().supportsFactoredAltMask()
+					&& hasDescentMask(decision, descentPlan)
+					? buildDescentAltBlock(dfaBlock, descentPlan) : null;
+			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("DESCENT-CODEGEN decision=%d plan=%s block=%s%n",
+					decision, descentPlan == null ? "null" : descentPlan.groups.size(),
+					descentBlock != null);
+			}
+			c = descentBlock != null ? descentBlock : dfaBlock;
 		}
 		else {
 			c = getComplexChoiceBlock(blkAST, alts);
@@ -280,6 +292,76 @@ public class ParserFactory extends DefaultOutputModelFactory {
 		org.antlr.v4.analysis.StaticDFA dfa =
 			g.staticDecisionDFAs != null ? g.staticDecisionDFAs.get(decision) : null;
 		return dfa != null && (dfa.hasEscapes() || dfa.hasMasks());
+	}
+
+	/** Does the decision's emitted table contain a mask-accept covered
+	 *  by one of the plan's descent groups? The block is only worth
+	 *  emitting then; a plan whose groups never fire in the table must
+	 *  not introduce adaptive widen paths into an otherwise fully
+	 *  static parser. */
+	protected boolean hasDescentMask(int decision,
+									 org.antlr.v4.analysis.SharedDescentAnalyzer.Plan plan) {
+		org.antlr.v4.analysis.StaticDFA dfa =
+			g.staticDecisionDFAs != null ? g.staticDecisionDFAs.get(decision) : null;
+		if (dfa == null) return false;
+		for (long m : dfa.acceptMasks) {
+			if (m == 0) continue;
+			for (org.antlr.v4.analysis.SharedDescentAnalyzer.Group grp : plan.groups) {
+				if (grp.codegenable && m == altBitsOf(grp.alts)) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Build the {@link org.antlr.v4.codegen.model.DescentAltBlock} for a
+	 * decision with a validated shared-descent plan, or null when no
+	 * group is codegenable (the ordinary DFAAltBlock then stays; its
+	 * mask-accept states defer to adaptivePredict). Only for targets
+	 * with mask codegen.
+	 */
+	protected org.antlr.v4.codegen.model.DescentAltBlock buildDescentAltBlock(
+		DFAAltBlock base, org.antlr.v4.analysis.SharedDescentAnalyzer.Plan plan) {
+		org.antlr.v4.codegen.model.DescentAltBlock block =
+			new org.antlr.v4.codegen.model.DescentAltBlock(base);
+		boolean any = false;
+		for (org.antlr.v4.analysis.SharedDescentAnalyzer.Group grp : plan.groups) {
+			if (!grp.codegenable) continue;
+			String defaultBit = grp.defaultAlt != 0
+				? "0x" + Long.toHexString(1L << (grp.defaultAlt-1)) : null;
+			org.antlr.v4.codegen.model.DescentGroup group =
+				new org.antlr.v4.codegen.model.DescentGroup(this, base.decision, altBitsOf(grp.alts),
+					gen.getTarget().escapeIfNeeded(g.getRule(grp.rule).name), defaultBit,
+					grp.callSiteState);
+			for (java.util.Map.Entry<Integer, org.antlr.v4.runtime.misc.IntervalSet> e
+					: grp.explicitArms.entrySet()) {
+				group.tails.add(new org.antlr.v4.codegen.model.DescentGroup.Tail(
+					this, tailArmKey(e.getValue()), e.getKey()));
+			}
+			block.groups.add(group);
+			any = true;
+		}
+		return any ? block : null;
+	}
+
+	/** Group alternative bitmask (bit 1<<(alt-1) per member). */
+	private static long altBitsOf(java.util.BitSet alts) {
+		long mask = 0;
+		for (int a = alts.nextSetBit(0); a >= 0; a = alts.nextSetBit(a+1)) mask |= 1L << (a-1);
+		return mask;
+	}
+
+	/** Match-arm pattern for a token set: token-type constants joined with " | ". */
+	private String tailArmKey(org.antlr.v4.runtime.misc.IntervalSet first) {
+		StringBuilder sb = new StringBuilder();
+		org.antlr.v4.codegen.Target target = gen.getTarget();
+		for (int i = 0; i < first.size(); i++) {
+			if (i > 0) sb.append(" | ");
+			int ttype = first.get(i);
+			sb.append(g.name).append('_')
+				.append(target.escapeIfNeeded(target.getTokenTypeAsTargetLabel(g, ttype)));
+		}
+		return sb.toString();
 	}
 
 	/** Like getComplexEBNFBlock but driving the decision from a static DFA table. */

@@ -213,6 +213,12 @@ public class Grammar implements AttributeResolver {
 	 */
 	public Map<Integer, org.antlr.v4.analysis.PrefixFactorAnalyzer.Plan> staticFactorPlans;
 
+	/** Per-decision shared-descent plans (SharedDescentAnalyzer), populated
+	 *  with -Xstatic-dfa for decisions with at least one shared-descent
+	 *  group; drives the DescentAltBlock codegen (rule-level factoring:
+	 *  call the common rule once, dispatch at the post-descent tail). */
+	public Map<Integer, org.antlr.v4.analysis.SharedDescentAnalyzer.Plan> staticDescentPlans;
+
 	public final Tool tool;
 
 	/** Token names and literal tokens like "void" are uniquely indexed.

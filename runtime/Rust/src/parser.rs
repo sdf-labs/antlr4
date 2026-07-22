@@ -147,6 +147,13 @@ where
     parse_listeners: Vec<Box<Node::Listener>>,
     _syntax_errors: Cell<i32>,
     error_listeners: Vec<ErrorListenerDelegate<'input, 'arena, Self, TF::Tok>>,
+    /// Resume-mode state of a shared-descent factoring: the parsed
+    /// prefix context, its rule, and the stream position just past it
+    /// (the tail); see `start_resume`.
+    resume_node: Option<(&'arena TreeNode<'input, 'arena, Node, TF::Tok>, usize, isize)>,
+    /// Error listeners muted during neutral prefix parses (stacked for
+    /// nesting); see `begin_mute`.
+    muted_error_listeners: Vec<Vec<ErrorListenerDelegate<'input, 'arena, Self, TF::Tok>>>,
 
     pub arena: &'arena Arena,
     ext: Ext,
@@ -443,6 +450,8 @@ where
             interp: Some(interp),
             global_cache_threshold: 0,
             ctx: std::ptr::null_mut(),
+            resume_node: None,
+            muted_error_listeners: Vec::new(),
             build_parse_trees: true,
             matched_eof: false,
             state: -1,
@@ -517,6 +526,114 @@ where
     /// single-bit mask.
     pub fn dfa_predict_mask(&mut self, decision: i32) -> Result<u64, ANTLRError> {
         self.dfa_walk(decision)
+    }
+
+    /// Mute error listeners (the neutral prefix parse of a descent
+    /// block must not fire spurious reports on inputs it cannot
+    /// complete). Pair with [`Self::end_mute`].
+    #[doc(hidden)]
+    pub fn begin_mute(&mut self) {
+        let el = std::mem::take(&mut self.error_listeners);
+        self.muted_error_listeners.push(el);
+    }
+
+    /// Restore listeners muted by [`Self::begin_mute`].
+    #[doc(hidden)]
+    pub fn end_mute(&mut self) {
+        if let Some(el) = self.muted_error_listeners.pop() {
+            self.error_listeners = el;
+        }
+    }
+
+    /// Remove a grafted context from its parent's children (an errorful
+    /// neutral parse's result is thrown away before deferring to the
+    /// adaptive engine).
+    #[doc(hidden)]
+    #[allow(invalid_reference_casting)]
+    pub fn discard_graft(&mut self, node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>) {
+        if self.build_parse_trees {
+            if let Some(parent) = node.get_parent() {
+                unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+            }
+        }
+    }
+
+    /// The number of syntax errors reported so far; a neutral prefix
+    /// parse that moves this count was errorful.
+    #[doc(hidden)]
+    pub fn syntax_error_count(&self) -> i32 {
+        self._syntax_errors.get()
+    }
+
+    /// Begin resume mode after a shared-descent group's common rule was
+    /// parsed once: un-graft the parsed node from the current context,
+    /// remember it with its rule and the tail stream position, and
+    /// rewind the stream to `prefix_pos` (the position saved before the
+    /// common rule was called). The re-descent through the ordinary
+    /// alternatives then predicts on the prefix tokens (consuming
+    /// nothing, the descent being epsilon by construction) until
+    /// [`Self::resume_take`] short-circuits the stored rule.
+    #[doc(hidden)]
+    #[allow(invalid_reference_casting)]
+    pub fn start_resume(
+        &mut self,
+        node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>,
+        rule: usize,
+        prefix_pos: isize,
+    ) {
+        let tail_pos = self.input.index();
+        if self.build_parse_trees {
+            if let Some(parent) = node.get_parent() {
+                self.set_current_ctx(Some(parent));
+                unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+            }
+        }
+        self.resume_node = Some((node, rule, tail_pos));
+        self.input.seek(prefix_pos);
+    }
+
+    /// Is resume mode active (a nested descent block must defer to the
+    /// adaptive engine rather than start another resume)?
+    #[doc(hidden)]
+    pub fn resume_active(&self) -> bool {
+        self.resume_node.is_some()
+    }
+
+    /// Take the stored prefix context when `rule` is called in resume
+    /// mode: graft it under the current context, restore the stream to
+    /// the tail position, and end resume mode. Returns None when
+    /// inactive or the rule does not match.
+    #[doc(hidden)]
+    #[allow(invalid_reference_casting)]
+    pub fn resume_take(
+        &mut self,
+        rule: usize,
+    ) -> Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>> {
+        if self.resume_node.map(|(_, r, _)| r) != Some(rule) {
+            return None;
+        }
+        let (node, _, tail_pos) = self.resume_node.take()?;
+        if self.build_parse_trees {
+            // re-stamp the invoking state to the resuming call site (the
+            // neutral parse created the node with a generic one)
+            unsafe { &mut *(node as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.set_invoking_state(self.get_state());
+            let parent = self.ctx();
+            unsafe { &mut *(node as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.set_parent(parent);
+            if let Some(parent) = parent {
+                unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.add_child(node);
+            }
+        }
+        self.input.seek(tail_pos);
+        Some(node)
+    }
+
+    /// Abort resume mode on error unwind: restore the stream to the
+    /// tail position and clear the state.
+    #[doc(hidden)]
+    pub fn abort_resume(&mut self) {
+        if let Some((_, _, tail_pos)) = self.resume_node.take() {
+            self.input.seek(tail_pos);
+        }
     }
 
     /// The shared static-table walk: the prediction of `decision` as an
