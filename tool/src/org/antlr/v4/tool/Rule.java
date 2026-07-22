@@ -53,6 +53,11 @@ public class Rule implements AttributeResolver {
 	}
 
 	public final String name;
+
+	/** This rule is the common rule R of at least one shared-descent
+	 *  group (see SharedDescentAnalyzer): its generated function carries
+	 *  the resume_take short-circuit hook. */
+	public boolean resumeTarget;
 	public List<GrammarAST> modifiers;
 
 	public RuleAST ast;

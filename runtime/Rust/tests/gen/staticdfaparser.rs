@@ -1082,6 +1082,9 @@ where
 	pub fn name(&mut self,) -> Result<&'arena NameContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
+		if let Some(_node) = recog.base.resume_take(RULE_name) {
+		    return Ok(_node.as_rule_context().unwrap());
+		}
         let _parentctx = recog.base.take_ctx();
         recog.base.enter_rule(NameContextExt::create(recog.get_arena(), _parentctx, recog.get_state())?, 4, RULE_name)?;
         let _local_ctx_fn = |recog: &Self| -> &'arena NameContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
