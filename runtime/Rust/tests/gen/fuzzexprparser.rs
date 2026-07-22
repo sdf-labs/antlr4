@@ -463,7 +463,7 @@ where
 			match { let _m = recog.base.dfa_predict_mask(2)?;
 			  match _m {
 			    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
-			    x if x == 0x3 && !recog.base.resume_active() => {
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() => {
 			        let _pos0 = recog.input.index();
 			        recog.base.set_state(25);
 			        recog.base.begin_mute();
@@ -480,7 +480,7 @@ where
 			                if recog.base.syntax_error_count() != _errs {
 			                    // errorful neutral parse: throw its result away and
 			                    // defer (muted, so no spurious reports escaped)
-			                    recog.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node));
+			                    recog.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node), 0);
 			                    recog.input.seek(_pos0);
 			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
 			                }
@@ -491,13 +491,13 @@ where
 			FuzzExpr_T__2 => 0x1,
 			                        _ => 0x2
 			                    };
-			                    recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e, _pos0);
+			                    recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e, _pos0, 0);
 			                    _tailbit
 			                }
 			            },
 			        }
 			    },
-			    0x3 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
 			    m => m,
 			  } } {
 			x if x == 0x1 =>{

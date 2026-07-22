@@ -210,7 +210,7 @@ public class ParserFactory extends DefaultOutputModelFactory {
 				g.staticDescentPlans != null ? g.staticDescentPlans.get(decision) : null;
 			org.antlr.v4.codegen.model.DescentAltBlock descentBlock =
 				descentPlan != null && gen.getTarget().supportsFactoredAltMask()
-					&& hasDescentMask(decision, descentPlan)
+					&& org.antlr.v4.analysis.SharedDescentAnalyzer.hasDescentMask(g, decision)
 					? buildDescentAltBlock(dfaBlock, descentPlan) : null;
 			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
 				System.err.printf("DESCENT-CODEGEN decision=%d plan=%s block=%s%n",
@@ -330,9 +330,15 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			String defaultBit = grp.defaultAlt != 0
 				? "0x" + Long.toHexString(1L << (grp.defaultAlt-1)) : null;
 			org.antlr.v4.codegen.model.DescentGroup group =
-				new org.antlr.v4.codegen.model.DescentGroup(this, base.decision, altBitsOf(grp.alts),
+				new org.antlr.v4.codegen.model.DescentGroup(this, base.decision, altBitsOf(grp.blockAlts),
 					gen.getTarget().escapeIfNeeded(g.getRule(grp.rule).name), defaultBit,
 					grp.callSiteState);
+			group.prefixLen = grp.prefixTokens.size();
+			for (int t : grp.prefixTokens) {
+				group.prefixTokens.add(
+					g.name + '_' + gen.getTarget().escapeIfNeeded(
+						gen.getTarget().getTokenTypeAsTargetLabel(g, t)));
+			}
 			for (java.util.Map.Entry<Integer, org.antlr.v4.runtime.misc.IntervalSet> e
 					: grp.explicitArms.entrySet()) {
 				group.tails.add(new org.antlr.v4.codegen.model.DescentGroup.Tail(

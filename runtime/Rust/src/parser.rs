@@ -550,10 +550,13 @@ where
     /// adaptive engine).
     #[doc(hidden)]
     #[allow(invalid_reference_casting)]
-    pub fn discard_graft(&mut self, node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>) {
+    pub fn discard_graft(&mut self, node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>, prefix_len: usize) {
         if self.build_parse_trees {
             if let Some(parent) = node.get_parent() {
                 unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+                for _ in 0..prefix_len {
+                    unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+                }
             }
         }
     }
@@ -580,12 +583,19 @@ where
         node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>,
         rule: usize,
         prefix_pos: isize,
+        prefix_len: usize,
     ) {
         let tail_pos = self.input.index();
         if self.build_parse_trees {
             if let Some(parent) = node.get_parent() {
                 self.set_current_ctx(Some(parent));
+                // un-graft the neutral-parse node and the prefix tokens
+                // the block matched for it: the re-descent re-matches
+                // them all naturally
                 unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+                for _ in 0..prefix_len {
+                    unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+                }
             }
         }
         self.resume_node = Some((node, rule, tail_pos));

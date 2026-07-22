@@ -857,8 +857,10 @@ descentMaskPredict(choice, groups) ::= <<
 >>
 
 DescentGroup(g, tails) ::= <<
-    x if x == <g.maskKey> && !<self()>.base.resume_active() => {
+    x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 && !<self()>.base.resume_active() => {
         let _pos0 = <self()>.input.index();
+<g.prefixTokens:{t |        <self()>.base.match_token(<t>,&mut <self()>.err_handler)?;
+}>
         <self()>.base.set_state(<g.callSiteState>);
         <self()>.base.begin_mute();
         let _errs = <self()>.base.syntax_error_count();
@@ -874,7 +876,7 @@ DescentGroup(g, tails) ::= <<
                 if <self()>.base.syntax_error_count() != _errs {
                     // errorful neutral parse: throw its result away and
                     // defer (muted, so no spurious reports escaped)
-                    <self()>.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node));
+                    <self()>.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node), <g.prefixLen>);
                     <self()>.input.seek(_pos0);
                     1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)
                 }
@@ -885,13 +887,13 @@ DescentGroup(g, tails) ::= <<
 <tails; separator="\n">
                         _ => <if(g.defaultBit)><g.defaultBit><else>1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)<endif>
                     };
-                    <self()>.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_<g.ruleName>, _pos0);
+                    <self()>.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_<g.ruleName>, _pos0, <g.prefixLen>);
                     _tailbit
                 }
             },
         }
     },
-    <g.maskKey> => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32),
+    x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32),
 >>
 
 Tail(t) ::= "<t.armKey> => <t.altBit>,"

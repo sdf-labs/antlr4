@@ -81,6 +81,13 @@ const CORNERS: &[&str] = &[
     "(SELECT t)",
     "(t)",
     "((SELECT t))",
+    // deep nesting: the subquery reading stays alive until the
+    // innermost content is seen; the unified block parses through
+    "((((1))))",
+    "(((((x)))))",
+    "((((((1, 2))))))",
+    "((((SELECT 1))))",
+    "((((SELECT t))))",
     // the tail decision inside operators
     "1 + (2 * 3)",
     "(1 + 2) * (3 + 4)",
@@ -110,3 +117,4 @@ fn paren_family_corners_agree() {
         check(corner);
     }
 }
+

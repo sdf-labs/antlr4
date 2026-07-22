@@ -1172,12 +1172,20 @@ where
 {
     #[inline]
 	pub fn  e(&mut self,) -> Result<&'arena EContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
-		self.e_rec(0)
+		{
+				    let recog = &mut *self;
+				    if let Some(_node) = recog.base.resume_take(RULE_e) {
+				        return Ok(_node.as_rule_context().unwrap());
+				    }
+				}self.e_rec(0)
 	}
 
 	fn e_rec(&mut self, _p: i32) -> Result<&'arena EContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
+		if let Some(_node) = recog.base.resume_take(RULE_e) {
+		    return Ok(_node.as_rule_context().unwrap());
+		}
 		let _parentctx = recog.base.take_ctx();
 		let _parentState = recog.base.get_state();
 		recog.base.enter_recursion_rule(EContextExt::create(recog.get_arena(), _parentctx, recog.get_state())?, 2, RULE_e, _p)?;
@@ -1191,7 +1199,49 @@ where
 			{
 			recog.base.set_state(32);
 			recog.err_handler.sync(&mut recog.base)?;
-			match { let _m = recog.base.dfa_predict_mask(1)?; if _m == 0 { 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32) } else { _m } } {
+			match { let _m = recog.base.dfa_predict_mask(1)?;
+			  match _m {
+			    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
+			    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() => {
+			        let _pos0 = recog.input.index();
+			       recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
+
+			        recog.base.set_state(13);
+			        recog.base.begin_mute();
+			        let _errs = recog.base.syntax_error_count();
+			        match recog.e() {
+			            Err(e) if !e.is_recoverable() => return Err(e),
+			            Err(_) => {
+			                recog.base.end_mute();
+			                recog.input.seek(_pos0);
+			                1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
+			            },
+			            Ok(_node) => {
+			                recog.base.end_mute();
+			                if recog.base.syntax_error_count() != _errs {
+			                    // errorful neutral parse: throw its result away and
+			                    // defer (muted, so no spurious reports escaped)
+			                    recog.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node), 1);
+			                    recog.input.seek(_pos0);
+			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
+			                }
+			                else {
+			                    // the tail token decides on the post-prefix stream;
+			                    // only then rewind into resume mode
+			                    let _tailbit = match recog.input.la(1) {
+			ParenExpr_T__1 => 0x4,
+			ParenExpr_T__2 => 0x8,
+			                        _ => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
+			                    };
+			                    recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e, _pos0, 1);
+			                    _tailbit
+			                }
+			            },
+			        }
+			    },
+			    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
+			    m => m,
+			  } } {
 			x if x == 0x1 =>{
 				{
 				recog.base.with_mut_ctx(|ctx| { NumContextExt::copy_from(ctx); });
@@ -1275,52 +1325,6 @@ where
 				/*InvokeRule e*/
 				recog.base.set_state(31);
 				recog.e_rec(3)?;
-				}
-			}
-			x if x == 0xc =>{
-				{
-				recog.base.set_state(12);
-				recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
-				/*InvokeRule e*/
-				recog.base.set_state(57);
-				recog.e_rec(0)?;
-				}
-				match recog.input.la(1) {
-				ParenExpr_T__1 =>{
-					{
-					recog.base.with_mut_ctx(|ctx| { RowConstructorContextExt::copy_from(ctx); });
-					let _local_ctx_fn = |recog: &Self| -> &'arena RowConstructorContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
-					recog.base.set_state(16); 
-					recog.err_handler.sync(&mut recog.base)?;
-					_la = recog.base.input.la(1);
-					loop {
-						{
-						{
-						recog.base.set_state(14);
-						recog.base.match_token(ParenExpr_T__1,&mut recog.err_handler)?;
-						/*InvokeRule e*/
-						recog.base.set_state(15);
-						recog.e_rec(0)?;
-						}
-						}
-						recog.base.set_state(18); 
-						recog.err_handler.sync(&mut recog.base)?;
-						_la = recog.base.input.la(1);
-						if !(_la==ParenExpr_T__1) {break}
-					}
-					recog.base.set_state(20);
-					recog.base.match_token(ParenExpr_T__2,&mut recog.err_handler)?;
-					}
-				},
-				ParenExpr_T__2 =>{
-					{
-					recog.base.with_mut_ctx(|ctx| { ParensContextExt::copy_from(ctx); });
-					let _local_ctx_fn = |recog: &Self| -> &'arena ParensContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
-					recog.base.set_state(24);
-					recog.base.match_token(ParenExpr_T__2,&mut recog.err_handler)?;
-					}
-				}
-					_ => Err(ANTLRError::no_alt(&mut recog.base))?
 				}
 			}
 				_ => {}
@@ -1864,7 +1868,7 @@ where
 
 // the serialized ATN is followed by 5 static SLL prediction tables (-Xstatic-dfa):
 //   decision 3: precedence-dispatched over cutoffs [1, 2], tables [2 3 4]
-//   decision 1: LL(k), k=5, 34 states, 4 adaptive escapes, 12 mask accepts
+//   decision 1: LL(k), k=5, 34 states, 2 adaptive escapes, 14 mask accepts
 //   decision 2: LL(k), k=1, 3 states
 //   table 2 (decision 3): LL(k), k=1, 5 states
 //   table 3 (decision 3): LL(k), k=1, 6 states
@@ -1872,7 +1876,7 @@ where
 static ATN_SIMULATOR_MANAGER: LazyLock<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));
 static _ATN: LazyLock<ATN> =
     LazyLock::new(|| ATNDeserializer::new(None).deserialize_compact(&_serializedATN));
-static _serializedATN: [&'static str; 16] = [
+static _serializedATN: [&'static str; 17] = [
     "CAIWdAQADgAEAg4CBAQOBAIAAgACAAICAgICAgICAgICAgICCAIiEAIWAhgCJAICAgICAgICAgICAgIC",
     "AgICAgICAgICAgYCQhACAgICAgICAgICAgICCgJSEAIUAhgCWBICAgQCBAIEAgQCBAIEAgQGBGoQBAIE",
     "BgJwEAICAgACBAYABAgABAIACgwEAAgIDg6AAQAMAgAAAARAAgAAAAhoAgAAAAwOBgQCAA4QCgAAAhAC",
@@ -1882,11 +1886,12 @@ static _serializedATN: [&'static str; 16] = [
     "AgAAAEJUAgAAAERGFAQAAEZIDgAAAEhSBgQCBkpMFAIAAExODgIAAE5SBgQCBFBEAgAAAFBKAgAAAFJY",
     "AgAAAFRQAgAAAFRWAgAAAFYGAgAAAFhUAgAAAFpcChAAAFxqChIAAF5qChIAAGBiCgIAAGJkBggEAGRm",
     "CgYAAGZqAgAAAGhaAgAAAGheAgAAAGhgAgAAAGoKAgAAAG4gAgAAAG4wAgAAAHJuBgQCAAwkQFBUaG4M",
-    "CggCRPYBAAAMBAIAAAoAAAEAAAAAAAAGAQAIAAEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "CggCRPYBAAAMBAIAAAoAAAAAAAAAAAAGAQAIAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "AAAAAAAAAAAAAAAAAAAAGDY2NjZUZmZ4igGKAZwBogG0AcYB5AHkAeQB5AH2AfYB9gH2AfYB9gH2AfYB",
     "9gH2AfYB9gH2AfYB9gECAgIICAQSEgYUFAgCAgoICAwQEA4SEhAUFBICAhQICBYQEBgSEhoUFBwCAh4I",
     "CCASFBIEBCIGBiQIDiYEBCIGBigIDiYCAioICCASFBwSEiwEBC4GBjAIDjIEBC4GBjQIDjICAjYICCAQ",
-    "EDgSEjoUFDwCAj4ICEASFEIYIAQGCCoEBgguBAYIMgQGCDQEBgg2BAYIOAQGCDoEBgg8BAYIPgQGCEAE",
-    "BghCBAYIBAYSAAQCAAAAABISEggIAgoMBA4OAgABChgABAQEAgQAAAAAABgYGBgYAQECBAQEBgYGCA4I",
-    "AAEMJAAEBAQEAgQAAAAAAAAkJCQkJCQBAQIEBAQGBgYICAgKDAoODggAAQIABAAAAAACBgQCBAQGCA=="
+    "EDgSEjoUFDwCAj4ICEASFEIcFAYGCAogBAYIKgQGCCwGBggKLgQGCDIEBgg0BAYINgQGCDgEBgg6BAYI",
+    "PAQGCD4EBghABAYIQgQGCAQGEgAEAgAAAAASEhIICAIKDAQODgIAAQoYAAQEBAIEAAAAAAAYGBgYGAEB",
+    "AgQEBAYGBggOCAABDCQABAQEBAIEAAAAAAAAJCQkJCQkAQECBAQEBgYGCAgICgwKDg4IAAECAAQAAAAA",
+    "AgYEAgQEBgg="
 ];
