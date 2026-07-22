@@ -37,8 +37,14 @@ public class DescentGroup extends OutputModelObject {
 	/** A valid call-site state of the common rule: the block sets the
 	 *  parser's invoking state to it before the neutral parse. */
 	public final int callSiteState;
-	/** Match-arm key of the group's alternative mask (hex literal). */
-	public final String maskKey;
+	/** Coverage bits of the group's block alternatives (hex literal):
+	 *  the arm fires for any multi-alt subset of this mask. */
+	public final String coverBits;
+	/** Leading shared tokens before the common rule: token-type
+	 *  constants in match order (empty for a pure zero-token descent). */
+	public final java.util.List<String> prefixTokens = new java.util.ArrayList<String>();
+	/** prefixTokens.size(), as a template-ready property. */
+	public int prefixLen;
 	/** The common rule's generated method name (the shared descent). */
 	public final String ruleName;
 	@ModelElement public final List<Tail> tails = new ArrayList<Tail>();
@@ -46,11 +52,11 @@ public class DescentGroup extends OutputModelObject {
 	 *  all-explicit dispatch (the fallback widens via adaptivePredict). */
 	public final String defaultBit;
 
-	public DescentGroup(OutputModelFactory factory, int decision, long mask, String ruleName, String defaultBit,
+	public DescentGroup(OutputModelFactory factory, int decision, long cover, String ruleName, String defaultBit,
 						int callSiteState) {
 		super(factory);
 		this.decision = decision;
-		this.maskKey = "0x" + Long.toHexString(mask);
+		this.coverBits = "0x" + Long.toHexString(cover);
 		this.ruleName = ruleName;
 		this.defaultBit = defaultBit;
 		this.callSiteState = callSiteState;

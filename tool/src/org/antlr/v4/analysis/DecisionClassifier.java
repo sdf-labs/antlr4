@@ -501,10 +501,14 @@ public class DecisionClassifier {
 	/** The shared-descent plan of the decision being classified. */
 	protected SharedDescentAnalyzer.Plan currentDescentPlan;
 
-	/** Do all live configurations of this state genuinely start via R? */
-	protected boolean allStartViaR(Set<ATNConfig> configs, DecisionState s, int ruleR) {
+	/** Do all live configurations of this state genuinely start via the
+	 *  group's rule (first-consumer proof, prefix-aware)? Configurations
+	 *  of non-member alternatives are exempt: they fall through to the
+	 *  block's widen arm, which defers them to adaptivePredict. */
+	protected boolean allStartViaR(Set<ATNConfig> configs, DecisionState s,
+								   SharedDescentAnalyzer.Group grp) {
 		for (ATNConfig c : configs) {
-			if (!descentAnalyzer().startsViaR(c, s, ruleR)) return false;
+			if (grp.alts.get(c.alt) && !descentAnalyzer().startsViaR(c, s, grp)) return false;
 		}
 		return true;
 	}
@@ -1419,14 +1423,13 @@ public class DecisionClassifier {
 						}
 						else {
 							SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
-								&& !currentFactorPlan.hasGroups()
 								? currentDescentPlan.groupCovering(alts) : null;
-							if (descentGroup != null && allStartViaR(configs, s, descentGroup.rule)) {
+							if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
 								res.descentMaskStates++;
 								res.approxConflicts.remove(conflicting);
 								res.contextSensitiveConflicts.remove(conflicting);
 								res.exactAmbigConflicts.add(conflicting);
-								acceptMasks.set(d, altBits(descentGroup.alts));
+								acceptMasks.set(d, altBits(alts));
 								if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
 									System.err.printf("DESCENT-MASK d=%d state=%d rule=%s alts=%s%n",
 										s.decision, d, g.getRule(descentGroup.rule).name, descentGroup.alts);
@@ -1480,11 +1483,10 @@ public class DecisionClassifier {
 				}
 				else {
 					SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
-						&& !currentFactorPlan.hasGroups()
 						? currentDescentPlan.groupCovering(alts) : null;
-					if (descentGroup != null && allStartViaR(configs, s, descentGroup.rule)) {
+					if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
 						res.descentMaskStates++;
-						acceptMasks.set(d, altBits(descentGroup.alts));
+						acceptMasks.set(d, altBits(alts));
 						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
 							System.err.printf("DESCENT-MASK d=%d state=%d rule=%s alts=%s%n",
 								s.decision, d, g.getRule(descentGroup.rule).name, descentGroup.alts);

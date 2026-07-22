@@ -262,7 +262,9 @@ public class OutputModelController {
 			org.antlr.v4.analysis.PrefixFactorAnalyzer.Plan factorPlan =
 				gg.staticFactorPlans != null
 					? gg.staticFactorPlans.get(((AltBlock)primaryStuff).decision) : null;
-			if (factorPlan != null) {
+			if (factorPlan != null
+				&& !org.antlr.v4.analysis.SharedDescentAnalyzer.hasDescentMask(
+					gg, ((AltBlock)primaryStuff).decision)) {
 				org.antlr.v4.codegen.model.FactoredAltBlock factored =
 					buildFactoredAltBlock(r, (AltBlock)primaryStuff, factorPlan);
 				if (factored != null) outerAlt.ops.set(0, factored);
