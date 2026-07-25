@@ -196,8 +196,8 @@ impl StaticDFATables {
                 dispatch_data.push(next());
             }
         }
-        drop(next);
-        assert!(ints.next().is_none(), "trailing data in static DFA blob");
+
+        debug_assert!(ints.next().is_none(), "trailing data in static DFA blob");
 
         Self {
             data,

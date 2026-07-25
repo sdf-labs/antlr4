@@ -86,9 +86,11 @@ public class SharedDescentAnalyzer {
 		 *  pure zero-token descent). */
 		public final List<Integer> prefixTokens = new ArrayList<Integer>();
 		/** The block's full mask: member alternatives plus prefix-sharing
-		 *  non-members (they fall through to the widen arm, which defers
-		 *  to adaptivePredict - so their conflicts never need resolving,
-		 *  but their states are accepted). */
+		 *  non-members admitted by {@link #widenHarmless} (their spans
+		 *  can never coincide with a member's neutral-R span, so when
+		 *  the neutral parse succeeds the tail dispatch cannot overrule
+		 *  adaptivePredict's min-alt resolution, and when it fails the
+		 *  block falls back to the adaptive engine). */
 		public final BitSet blockAlts = new BitSet();
 		/** The R-call follow states of the member alternatives: the
 		 *  prefix-side boundary of the first-consumer proof (frames
@@ -142,6 +144,13 @@ public class SharedDescentAnalyzer {
 		}
 		for (int a = 1; a <= s.getNumberOfTransitions(); a++) {
 			for (AltPath p : altPaths(s, a)) {
+				if (!firstConsumerUnique(s, a, p)) {
+					if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+						System.err.printf("CAND-REJ d=%d alt=%d rule=%s prefix=%s%n", s.decision, a,
+							g.getRule(p.rule).name, p.tokens);
+					}
+					continue;
+				}
 				String key = p.rule + "|" + p.tokens;
 				byKey.computeIfAbsent(key, k -> new BitSet()).set(a);
 				pathsByKey.computeIfAbsent(key, k -> new ArrayList<AltPath>()).add(p);
@@ -158,18 +167,16 @@ public class SharedDescentAnalyzer {
 				grp.boundaryStates.add(p.boundary);
 			}
 			analyzeDispatch(s, grp);
-			boolean dj = disjointOk(s, grp);
 			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
-				System.err.printf("DISPATCH d=%d rule=%s alts=%s default=%d arms=%s disjoint=%s%n",
-					s.decision, g.getRule(grp.rule).name, grp.alts, grp.defaultAlt, grp.explicitArms, dj);
+				System.err.printf("DISPATCH d=%d rule=%s alts=%s default=%d arms=%s%n",
+					s.decision, g.getRule(grp.rule).name, grp.alts, grp.defaultAlt, grp.explicitArms);
 			}
-			if (grp.codegenable && !dj) grp.codegenable = false;
-			// the block's mask widens to prefix-sharing non-members (they
-			// fall through to the widen arm, so their states are accepted
-			// without any conflict resolution of their own)
+			// the block's mask widens to prefix-sharing non-members whose
+			// own spans cannot be confused with a member's (their states
+			// then need no conflict resolution of their own)
 			if (grp.codegenable && !grp.prefixTokens.isEmpty()) {
 				for (int a = 1; a <= s.getNumberOfTransitions(); a++) {
-					if (!grp.alts.get(a) && postPrefixState(s, a, grp.prefixTokens) != null) {
+					if (!grp.alts.get(a) && widenHarmless(s, grp, a)) {
 						grp.blockAlts.set(a);
 					}
 				}
@@ -185,36 +192,41 @@ public class SharedDescentAnalyzer {
 	}
 
 	/**
-	 * The ambiguity disjointness check for an expression-first
-	 * dispatch: some non-member alternative sharing the prefix could
-	 * also complete with the same tail. That happens exactly when a
-	 * single token completes both the non-member alternative and R
-	 * itself (e.g. {@code (TABLE)} as a parenthesized expression vs as
-	 * a query): then a clean R parse with that tail is not unique to
-	 * the member and the group must be deferred. The check is precise:
-	 * for every content-first token of every prefix-sharing non-member
-	 * alternative, require that it cannot complete BOTH that
-	 * alternative and R.
+	 * May the block's mask safely cover states where the prefix-sharing
+	 * non-member alternative {@code a} is live? The neutral R parse
+	 * plus tail dispatch commits to a member alternative, so a live
+	 * non-member is dangerous exactly when the input can complete BOTH
+	 * a member (span = prefix + an R string) and {@code a} itself AND
+	 * adaptivePredict's min-alt resolution would prefer {@code a} over
+	 * the member the dispatch commits to (e.g. {@code ( query )} next
+	 * to a {@code ( expression )} group: {@code (SELECT 1)} is both a
+	 * parenthesized expression over a subquery and a direct subquery,
+	 * and the direct subquery alternative wins). Two conservative
+	 * sufficient conditions for harmlessness: every member is
+	 * lower-numbered than {@code a} (the min-alt rule then always
+	 * prefers a member, whichever one the dispatch commits to), or no
+	 * string can be both an R derivation and {@code a}'s post-prefix
+	 * content - over-approximated by disjoint FIRST sets (this also
+	 * covers the {@code (TABLE)}-style exact-single-token collision,
+	 * which is a special case of FIRST overlap). Otherwise the
+	 * alternative is left out of the mask and its states fall back to
+	 * the adaptive engine.
 	 */
-	private boolean disjointOk(DecisionState s, Group grp) {
+	private boolean widenHarmless(DecisionState s, Group grp, int a) {
+		ATNState post = postPrefixState(s, a, grp.prefixTokens);
+		if (post == null) return false; // does not share the prefix: irrelevant
+		if (a >= grp.alts.length()) return true; // every member beats a on min-alt
+		if (System.getProperty("antlr.dfa.disableWidenGate") != null) return true;
 		LL1Analyzer ll1 = new LL1Analyzer(atn);
-		for (int a = 1; a <= s.getNumberOfTransitions(); a++) {
-			if (grp.alts.get(a)) continue;
-			ATNState post = postPrefixState(s, a, grp.prefixTokens);
-			if (post == null) continue; // does not share the prefix: irrelevant
-			for (int t : ll1.LOOK(post, null).toArray()) {
-				if (t <= 0) continue;
-				boolean cr = canBeExactly(atn.ruleToStartState[grp.rule], t);
-				boolean ca = canBeExactly(post, t);
-				// a genuine collision is fatal only when the runtime's
-				// min-alt resolution would prefer the non-member over
-				// every member of the group
-				if (cr && ca && a < grp.alts.nextSetBit(0)) {
-					if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
-						System.err.printf("DISJOINT-FAIL d=%d alt=%d token=%d%n", s.decision, a, t);
-					}
-					return false;
+		IntervalSet look = ll1.LOOK(post, null);
+		IntervalSet firstR = ll1.LOOK(atn.ruleToStartState[grp.rule], null);
+		for (int t : look.toArray()) {
+			if (t > 0 && firstR.contains(t)) {
+				if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+					System.err.printf("WIDEN-VETO d=%d alt=%d rule=%s first=%d%n",
+						s.decision, a, g.getRule(grp.rule).name, t);
 				}
+				return false;
 			}
 		}
 		return true;
@@ -252,45 +264,6 @@ public class SharedDescentAnalyzer {
 		return null;
 	}
 
-	/** Can the language from {@code start} be exactly token {@code t}
-	 *  (consume {@code t}, then reach a rule stop with only epsilon
-	 *  steps)? */
-	private boolean canBeExactly(ATNState start, int t) {
-		Set<String> seen = new HashSet<String>();
-		Deque<Object[]> work = new ArrayDeque<Object[]>();
-		work.add(new Object[]{start, Boolean.FALSE});
-		while (!work.isEmpty()) {
-			Object[] item = work.poll();
-			ATNState st = (ATNState)item[0];
-			boolean consumed = (Boolean)item[1];
-			String key = st.stateNumber + ":" + consumed;
-			if (!seen.add(key)) continue;
-			if (st instanceof RuleStopState) {
-				if (consumed) return true;
-				continue;
-			}
-			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
-				Transition tr = st.transition(i);
-				if (tr instanceof RuleTransition) {
-					// descending into a callee stays epsilon only when its
-					// interior is token-free: in the consumed phase its
-					// token transitions are pruned below, leaving only the
-					// nullable paths
-					work.add(new Object[]{tr.target, consumed});
-					work.add(new Object[]{((RuleTransition)tr).followState, consumed});
-				}
-				else if (tr.isEpsilon()) {
-					work.add(new Object[]{tr.target, consumed});
-				}
-				else if (!consumed && tr.label() != null && tr.label().contains(t)) {
-					work.add(new Object[]{tr.target, Boolean.TRUE});
-				}
-				// any other token consumption breaks exactness
-			}
-		}
-		return false;
-	}
-
 	/**
 	 * Does the decision's emitted table contain a mask-accept covered
 	 *  by one of the plan's descent groups (any multi-alt subset of a
@@ -306,9 +279,9 @@ public class SharedDescentAnalyzer {
 		for (long m : dfa.acceptMasks) {
 			if (m == 0 || (m & (m-1)) == 0) continue; // singletons take ordinary arms
 			for (Group grp : plan.groups) {
-				if (!grp.codegenable) continue;
-				BitSet cover = grp.blockAlts.isEmpty() ? grp.alts : grp.blockAlts;
-				long bits = 0;
+			if (!grp.codegenable) continue;
+			BitSet cover = grp.blockAlts.isEmpty() ? grp.alts : grp.blockAlts;
+			long bits = 0;
 				for (int a = cover.nextSetBit(0); a >= 0; a = cover.nextSetBit(a+1)) bits |= 1L << (a-1);
 				if ((m & ~bits) == 0) return true;
 			}
@@ -530,6 +503,9 @@ public class SharedDescentAnalyzer {
 	 *  prefix is empty) to the group's rule. */
 	private Set<Integer> epsilonCallSites(DecisionState s, Group grp) {
 		String key = s.decision + ":" + grp.rule + ":" + grp.prefixTokens.hashCode();
+		if ("descent".equals(System.getProperty("antlr.dfa.debug")) && !callSitesCache.containsKey(key)) {
+			System.err.printf("CALLSITES-G d=%d rule=%s%n", s.decision, g.getRule(grp.rule).name);
+		}
 		Set<Integer> sites = callSitesCache.get(key);
 		if (sites == null) {
 			sites = new HashSet<Integer>();
@@ -553,6 +529,9 @@ public class SharedDescentAnalyzer {
 					if (t instanceof RuleTransition) {
 						RuleTransition rt = (RuleTransition)t;
 						sites.add(rt.followState.stateNumber);
+						// the descent continues after the call too: chains
+						// like identifier -> over -> identifier pass through
+						work.add(rt.followState);
 						if (rt.target.ruleIndex != grp.rule) work.add(t.target);
 					}
 					else if (t.isEpsilon()) {
@@ -561,6 +540,10 @@ public class SharedDescentAnalyzer {
 				}
 			}
 			callSitesCache.put(key, sites);
+			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("CALLSITES-GS d=%d rule=%s sites=%s%n", s.decision,
+					g.getRule(grp.rule).name, sites);
+			}
 		}
 		return sites;
 	}
@@ -586,6 +569,7 @@ public class SharedDescentAnalyzer {
 					if (t instanceof RuleTransition) {
 						RuleTransition rt = (RuleTransition)t;
 						sites.add(rt.followState.stateNumber);
+						work.add(rt.followState);
 						if (rt.target.ruleIndex != ruleR) work.add(t.target);
 					}
 					else if (t.isEpsilon()) {
@@ -726,6 +710,45 @@ public class SharedDescentAnalyzer {
 			}
 		}
 		return out;
+	}
+
+	/** Is R the unique first consuming position of alternative
+	 *  {@code alt} after its prefix? The neutral parse invokes R
+	 *  immediately after the prefix, so a member alternative's body
+	 *  must not be able to consume anything - a token or a non-R call
+	 *  - before its first R call, nor to reach the end of the decision
+	 *  rule before it. Otherwise the neutral R span and the body's
+	 *  first R call can cover different tokens (e.g. {@code TRIM LPAREN
+	 *  (trimsSpecification? valueExpression? FROM) ...}, where BOTH is
+	 *  a trimsSpecification to the body but identifier content to the
+	 *  neutral R) and the resume graft would attach at the wrong
+	 *  place. */
+	private boolean firstConsumerUnique(DecisionState s, int alt, AltPath p) {
+		ATNState start = postPrefixState(s, alt, p.tokens);
+		if (start == null) return false;
+		Set<ATNState> seen = new HashSet<ATNState>();
+		Deque<ATNState> work = new ArrayDeque<ATNState>();
+		work.add(start);
+		boolean any = false;
+		while (!work.isEmpty()) {
+			ATNState st = work.poll();
+			if (!seen.add(st)) continue;
+			if (st instanceof RuleStopState) return false;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof RuleTransition) {
+					if (((RuleTransition)t).target.ruleIndex != p.rule) return false;
+					any = true;
+				}
+				else if (t.isEpsilon()) {
+					work.add(t.target);
+				}
+				else {
+					return false;
+				}
+			}
+		}
+		return any;
 	}
 
 	/** Can R be reached from {@code start} following epsilon

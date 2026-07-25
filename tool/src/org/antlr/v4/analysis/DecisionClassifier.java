@@ -508,7 +508,20 @@ public class DecisionClassifier {
 	protected boolean allStartViaR(Set<ATNConfig> configs, DecisionState s,
 								   SharedDescentAnalyzer.Group grp) {
 		for (ATNConfig c : configs) {
-			if (grp.alts.get(c.alt) && !descentAnalyzer().startsViaR(c, s, grp)) return false;
+			if (!grp.alts.get(c.alt)) continue;
+			// boundary-popped configurations carry no first-consumer
+			// evidence (their chain is the wildcard context), but the
+			// inputs that produced them reached this state through R's
+			// span, so the neutral R call succeeds for them too
+			if (c.context == null || c.context.isEmpty()) continue;
+			if (!descentAnalyzer().startsViaR(c, s, grp)) {
+				if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+					System.err.printf("STARTSVIA-FAIL d=%d alt=%d state=%d taint=%d ctx=%s%n",
+						s.decision, c.alt, c.state.stateNumber, c.reachesIntoOuterContext,
+						decodeContext(c.context));
+				}
+				return false;
+			}
 		}
 		return true;
 	}
@@ -1184,6 +1197,7 @@ public class DecisionClassifier {
 			// generated parser executes the group's shared prefix and
 			// defers the choice to its tail decision
 			PrefixFactorAnalyzer.Group factorGroup = currentFactorPlan != null
+				&& System.getProperty("antlr.dfa.disableFactorMasks") == null
 				? currentFactorPlan.groupCovering(alts) : null;
 			if (factorGroup != null) res.factorMaskStates++;
 			if (PredictionMode.hasSLLConflictTerminatingPrediction(PredictionMode.SLL, cs)) {
@@ -1419,12 +1433,16 @@ public class DecisionClassifier {
 						// resolves the choice at the tail decision)
 						if (factorGroup != null) {
 							res.factorEscapesCured++;
+							res.approxConflicts.remove(conflicting);
+							res.contextSensitiveConflicts.remove(conflicting);
+							res.exactAmbigConflicts.add(conflicting);
 							acceptMasks.set(d, altBits(factorGroup.alts));
 						}
 						else {
 							SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
+								&& System.getProperty("antlr.dfa.disableDescentMasks") == null
 								? currentDescentPlan.groupCovering(alts) : null;
-							if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
+							if (descentGroup != null) {
 								res.descentMaskStates++;
 								res.approxConflicts.remove(conflicting);
 								res.contextSensitiveConflicts.remove(conflicting);
@@ -1483,8 +1501,9 @@ public class DecisionClassifier {
 				}
 				else {
 					SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
+						&& System.getProperty("antlr.dfa.disableDescentMasks") == null
 						? currentDescentPlan.groupCovering(alts) : null;
-					if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
+					if (descentGroup != null) {
 						res.descentMaskStates++;
 						acceptMasks.set(d, altBits(alts));
 						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {

@@ -117,4 +117,3 @@ fn paren_family_corners_agree() {
         check(corner);
     }
 }
-
