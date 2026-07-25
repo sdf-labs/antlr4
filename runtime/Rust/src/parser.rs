@@ -19,7 +19,7 @@ use crate::rule_context::{states_stack, RuleContext as _};
 use crate::token::{OwningToken, Token, TOKEN_EOF};
 use crate::token_factory::TokenFactory;
 use crate::token_stream::TokenStream;
-use crate::tree::{NodeKindType, ParseTreeListener, Tree as _, TreeNode};
+use crate::tree::{NodeKindType, ParseTreeListener, ParseTreeWalker, Tree as _, TreeNode};
 use crate::utils::cell_update;
 use crate::vocabulary::Vocabulary;
 
@@ -92,6 +92,12 @@ where
     fn set_recursion_limit(&mut self, v: u32);
 }
 
+type ResumableNode<'input, 'arena, Node, TF> = (
+    &'arena TreeNode<'input, 'arena, Node, <TF as TokenFactory<'input, 'arena>>::Tok>,
+    usize,
+    isize,
+);
+
 /// Abstract base parser implementation
 ///
 /// Only meant to be instantiated by generated parsers
@@ -150,10 +156,12 @@ where
     /// Resume-mode state of a shared-descent factoring: the parsed
     /// prefix context, its rule, and the stream position just past it
     /// (the tail); see `start_resume`.
-    resume_node: Option<(&'arena TreeNode<'input, 'arena, Node, TF::Tok>, usize, isize)>,
-    /// Error listeners muted during neutral prefix parses (stacked for
-    /// nesting); see `begin_mute`.
-    muted_error_listeners: Vec<Vec<ErrorListenerDelegate<'input, 'arena, Self, TF::Tok>>>,
+    resume_node: Option<ResumableNode<'input, 'arena, Node, TF>>,
+    #[doc(hidden)]
+    pub resume_take_target: Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>>,
+    /// Mute all listeners (parse and error), counted for nesting; see
+    /// `begin_neutral_parse`.
+    muted: u32,
 
     pub arena: &'arena Arena,
     ext: Ext,
@@ -284,20 +292,24 @@ where
                 // todo report ructc inference issue
                 let node = self.create_error_node(o)?;
                 self.add_child_to_ctx(node);
-                for listener in &mut self.parse_listeners {
-                    listener.visit_error_node(
-                        node.as_error_node()
-                            .expect("node was created as error node"),
-                    )?
+                if !self.is_muted() {
+                    for listener in &mut self.parse_listeners {
+                        listener.visit_error_node(
+                            node.as_error_node()
+                                .expect("node was created as error node"),
+                        )?
+                    }
                 }
             } else {
                 let node = self.create_token_node(o)?;
                 self.add_child_to_ctx(node);
-                for listener in &mut self.parse_listeners {
-                    listener.visit_terminal(
-                        node.as_terminal_node()
-                            .expect("node was created as terminal node"),
-                    )?
+                if !self.is_muted() {
+                    for listener in &mut self.parse_listeners {
+                        listener.visit_terminal(
+                            node.as_terminal_node()
+                                .expect("node was created as terminal node"),
+                        )?
+                    }
                 }
             }
         }
@@ -355,6 +367,11 @@ where
         err: Option<&ANTLRError>,
     ) {
         cell_update(&self._syntax_errors, |it| it + 1);
+
+        if self.is_muted() {
+            return;
+        }
+
         let offending_token: Option<&_> = match offending_token {
             None => Some(self.get_current_token().borrow()),
             Some(x) => Some(self.input.get(x).borrow()),
@@ -451,7 +468,8 @@ where
             global_cache_threshold: 0,
             ctx: std::ptr::null_mut(),
             resume_node: None,
-            muted_error_listeners: Vec::new(),
+            resume_take_target: None,
+            muted: 0,
             build_parse_trees: true,
             matched_eof: false,
             state: -1,
@@ -528,34 +546,75 @@ where
         self.dfa_walk(decision)
     }
 
-    /// Mute error listeners (the neutral prefix parse of a descent
-    /// block must not fire spurious reports on inputs it cannot
-    /// complete). Pair with [`Self::end_mute`].
+    /// Set the stage for a neutral prefix parse:
+    /// - Mark the input stream so it can be rewound later
+    /// - Skip over prefix tokens (note: do NOT parse them through
+    ///   [`Self::match_token`] at this point -- they are guaranteed to match by
+    ///   the DFA predictor, and they will be properly parsed on the real
+    ///   descent down)
+    /// - Save the current context so it can be restored later (the neutral
+    ///   parse grafts its subtree under it, and an error unwinding out of it
+    ///   leaves the context pointer stale)
+    /// - Mute all listeners (the neutral prefix parse of a descent
+    ///   block must not fire spurious reports on inputs it cannot
+    ///   complete).
+    ///
+    /// Pair with [`Self::end_neutral_parse`].
     #[doc(hidden)]
-    pub fn begin_mute(&mut self) {
-        let el = std::mem::take(&mut self.error_listeners);
-        self.muted_error_listeners.push(el);
+    #[allow(clippy::type_complexity)]
+    pub fn begin_neutral_parse(
+        &mut self,
+        prefix_len: isize,
+    ) -> (
+        isize,
+        isize,
+        i32,
+        Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>>,
+    ) {
+        let err_cnt = self.syntax_error_count();
+        let pos0 = self.input.index();
+        let mark = self.input.mark();
+        let ctx = self.ctx();
+        self.input.seek(pos0 + prefix_len);
+        self.muted += 1;
+
+        (pos0, mark, err_cnt, ctx)
     }
 
-    /// Restore listeners muted by [`Self::begin_mute`].
+    /// Undoes one level of [`Self::begin_neutral_parse`]: un-mutes,
+    /// rewinds the stream to the decision start, restores the saved
+    /// context, and un-grafts the neutral parse's subtree (the saved
+    /// context's last child).
     #[doc(hidden)]
-    pub fn end_mute(&mut self) {
-        if let Some(el) = self.muted_error_listeners.pop() {
-            self.error_listeners = el;
-        }
+    #[allow(clippy::type_complexity)]
+    pub fn end_neutral_parse(
+        &mut self,
+        (pos0, mark, _err_cnt, ctx): &(
+            isize,
+            isize,
+            i32,
+            Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>>,
+        ),
+    ) {
+        assert!(self.muted > 0);
+        self.muted -= 1;
+        self.input.seek(*pos0);
+        self.input.release(*mark);
+        self.set_current_ctx(*ctx);
+        self.discard_graft();
     }
 
     /// Remove a grafted context from its parent's children (an errorful
     /// neutral parse's result is thrown away before deferring to the
     /// adaptive engine).
     #[doc(hidden)]
-    #[allow(invalid_reference_casting)]
-    pub fn discard_graft(&mut self, node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>, prefix_len: usize) {
+    pub fn discard_graft(&mut self) {
         if self.build_parse_trees {
-            if let Some(parent) = node.get_parent() {
-                unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
-                for _ in 0..prefix_len {
-                    unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
+            // The common rule context was parsed and attached to the current
+            // ctx as the last child, pop it off:
+            unsafe {
+                if let Some(ctx) = self.ctx_mut() {
+                    ctx.remove_last_child();
                 }
             }
         }
@@ -577,29 +636,14 @@ where
     /// nothing, the descent being epsilon by construction) until
     /// [`Self::resume_take`] short-circuits the stored rule.
     #[doc(hidden)]
-    #[allow(invalid_reference_casting)]
     pub fn start_resume(
         &mut self,
         node: &'arena TreeNode<'input, 'arena, Node, TF::Tok>,
         rule: usize,
-        prefix_pos: isize,
-        prefix_len: usize,
     ) {
         let tail_pos = self.input.index();
-        if self.build_parse_trees {
-            if let Some(parent) = node.get_parent() {
-                self.set_current_ctx(Some(parent));
-                // un-graft the neutral-parse node and the prefix tokens
-                // the block matched for it: the re-descent re-matches
-                // them all naturally
-                unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
-                for _ in 0..prefix_len {
-                    unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.remove_last_child();
-                }
-            }
-        }
+
         self.resume_node = Some((node, rule, tail_pos));
-        self.input.seek(prefix_pos);
     }
 
     /// Is resume mode active (a nested descent block must defer to the
@@ -614,27 +658,39 @@ where
     /// the tail position, and end resume mode. Returns None when
     /// inactive or the rule does not match.
     #[doc(hidden)]
-    #[allow(invalid_reference_casting)]
     pub fn resume_take(
         &mut self,
         rule: usize,
-    ) -> Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>> {
+    ) -> Result<Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>>, ANTLRError> {
         if self.resume_node.map(|(_, r, _)| r) != Some(rule) {
-            return None;
+            return Ok(None);
         }
-        let (node, _, tail_pos) = self.resume_node.take()?;
+        let (node, _, tail_pos) = self.resume_node.take().unwrap();
+
+        // Graft the stored node under the current context (the neutral parse
+        // created it with a generic invoking state and a wrong parent)
         if self.build_parse_trees {
-            // re-stamp the invoking state to the resuming call site (the
-            // neutral parse created the node with a generic one)
-            unsafe { &mut *(node as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.set_invoking_state(self.get_state());
-            let parent = self.ctx();
-            unsafe { &mut *(node as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.set_parent(parent);
-            if let Some(parent) = parent {
-                unsafe { &mut *(parent as *const TreeNode<'input, 'arena, Node, TF::Tok> as *mut TreeNode<'input, 'arena, Node, TF::Tok>) }.add_child(node);
-            }
+            self.add_child_to_ctx(node);
         }
+        let state = self.get_state();
+        let parent = self.take_ctx();
+        self.set_current_ctx(Some(node));
+        self.with_mut_ctx(|ctx| {
+            ctx.set_parent(parent);
+            ctx.set_invoking_state(state);
+        });
+        // Fire parser events that was muted during the neutral parse
+        if !self.is_muted() {
+            self.parse_listeners = std::mem::take(&mut self.parse_listeners)
+                .into_iter()
+                .map(|listener| ParseTreeWalker::walk(listener, node))
+                .collect::<Result<Vec<_>, ANTLRError>>()?;
+        }
+
+        self.set_current_ctx(parent);
+
         self.input.seek(tail_pos);
-        Some(node)
+        Ok(Some(node))
     }
 
     /// Abort resume mode on error unwind: restore the stream to the
@@ -777,6 +833,11 @@ where
     }
 
     #[inline]
+    fn is_muted(&self) -> bool {
+        self.muted > 0
+    }
+
+    #[inline]
     fn parent_ctx(&self) -> Option<&'arena TreeNode<'input, 'arena, Node, TF::Tok>> {
         self.ctx().and_then(|it| it.get_parent())
     }
@@ -889,19 +950,23 @@ where
     }
 
     pub fn trigger_enter_rule_event(&mut self) -> Result<(), ANTLRError> {
-        let ctx = self.ctx().unwrap();
-        for listener in self.parse_listeners.iter_mut() {
-            listener.enter_every_rule(ctx)?;
-            ctx.enter_rule(listener)?;
+        if !self.is_muted() {
+            let ctx = self.ctx().unwrap();
+            for listener in self.parse_listeners.iter_mut() {
+                listener.enter_every_rule(ctx)?;
+                ctx.enter_rule(listener)?;
+            }
         }
         Ok(())
     }
 
     pub fn trigger_exit_rule_event(&mut self) -> Result<(), ANTLRError> {
-        let ctx = self.ctx().unwrap();
-        for listener in self.parse_listeners.iter_mut().rev() {
-            ctx.exit_rule(listener)?;
-            listener.exit_every_rule(ctx)?;
+        if !self.is_muted() {
+            let ctx = self.ctx().unwrap();
+            for listener in self.parse_listeners.iter_mut().rev() {
+                ctx.exit_rule(listener)?;
+                listener.exit_every_rule(ctx)?;
+            }
         }
         Ok(())
     }

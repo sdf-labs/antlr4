@@ -1172,20 +1172,15 @@ where
 {
     #[inline]
 	pub fn  e(&mut self,) -> Result<&'arena EContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
-		{
-				    let recog = &mut *self;
-				    if let Some(_node) = recog.base.resume_take(RULE_e) {
-				        return Ok(_node.as_rule_context().unwrap());
-				    }
-				}self.e_rec(0)
+		self.e_rec(0)
 	}
 
 	fn e_rec(&mut self, _p: i32) -> Result<&'arena EContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
-        dbt_antlr4::maybe_grow_stack!({
-		let recog = self;
-		if let Some(_node) = recog.base.resume_take(RULE_e) {
+		if let Some(_node) = self.base.resume_take(RULE_e)? {
 		    return Ok(_node.as_rule_context().unwrap());
 		}
+        dbt_antlr4::maybe_grow_stack!({
+		let recog = self;
 		let _parentctx = recog.base.take_ctx();
 		let _parentState = recog.base.get_state();
 		recog.base.enter_recursion_rule(EContextExt::create(recog.get_arena(), _parentctx, recog.get_state())?, 2, RULE_e, _p)?;
@@ -1203,38 +1198,46 @@ where
 			  match _m {
 			    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
 			    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() => {
-			        let _pos0 = recog.input.index();
-			       recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
-
 			        recog.base.set_state(13);
-			        recog.base.begin_mute();
-			        let _errs = recog.base.syntax_error_count();
+			        let _neutral_state = recog.base.begin_neutral_parse(1);
 			        match recog.e() {
-			            Err(e) if !e.is_recoverable() => return Err(e),
+			            Err(e) if !e.is_recoverable() => {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    return Err(e)
+			                },
 			            Err(_) => {
-			                recog.base.end_mute();
-			                recog.input.seek(_pos0);
+			                recog.base.end_neutral_parse(&_neutral_state);
 			                1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
 			            },
 			            Ok(_node) => {
-			                recog.base.end_mute();
-			                if recog.base.syntax_error_count() != _errs {
+			                if recog.base.syntax_error_count() != _neutral_state.2 {
+			                    recog.base.end_neutral_parse(&_neutral_state);
 			                    // errorful neutral parse: throw its result away and
 			                    // defer (muted, so no spurious reports escaped)
-			                    recog.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node), 1);
-			                    recog.input.seek(_pos0);
 			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
 			                }
 			                else {
-			                    // the tail token decides on the post-prefix stream;
-			                    // only then rewind into resume mode
+			                    // the tail token decides on the post-prefix stream.
+			                    // An explicit arm (or the static default) rewinds into
+			                    // resume mode; anything else rewinds and defers to the
+			                    // adaptive engine from the decision start - no resume,
+			                    // the chosen body re-parses everything
 			                    let _tailbit = match recog.input.la(1) {
-			ParenExpr_T__1 => 0x4,
-			ParenExpr_T__2 => 0x8,
-			                        _ => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
+			                        ParenExpr_T__1 => Some(0x4),
+			                        ParenExpr_T__2 => Some(0x8),
+			                        _ => None,
 			                    };
-			                    recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e, _pos0, 1);
-			                    _tailbit
+			                    match _tailbit {
+			                        Some(bit) => {
+			                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e);
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            bit
+			                        }
+			                        None => {
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
+			                        }
+			                    }
 			                }
 			            },
 			        }
@@ -1868,7 +1871,7 @@ where
 
 // the serialized ATN is followed by 5 static SLL prediction tables (-Xstatic-dfa):
 //   decision 3: precedence-dispatched over cutoffs [1, 2], tables [2 3 4]
-//   decision 1: LL(k), k=5, 34 states, 2 adaptive escapes, 14 mask accepts
+//   decision 1: LL(k), k=5, 34 states, 16 mask accepts
 //   decision 2: LL(k), k=1, 3 states
 //   table 2 (decision 3): LL(k), k=1, 5 states
 //   table 3 (decision 3): LL(k), k=1, 6 states
@@ -1886,12 +1889,12 @@ static _serializedATN: [&'static str; 17] = [
     "AgAAAEJUAgAAAERGFAQAAEZIDgAAAEhSBgQCBkpMFAIAAExODgIAAE5SBgQCBFBEAgAAAFBKAgAAAFJY",
     "AgAAAFRQAgAAAFRWAgAAAFYGAgAAAFhUAgAAAFpcChAAAFxqChIAAF5qChIAAGBiCgIAAGJkBggEAGRm",
     "CgYAAGZqAgAAAGhaAgAAAGheAgAAAGhgAgAAAGoKAgAAAG4gAgAAAG4wAgAAAHJuBgQCAAwkQFBUaG4M",
-    "CggCRPYBAAAMBAIAAAoAAAAAAAAAAAAGAQAIAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "CggCRPYBAAAMBAIAAAoAAAAAAAAAAAAGAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "AAAAAAAAAAAAAAAAAAAAGDY2NjZUZmZ4igGKAZwBogG0AcYB5AHkAeQB5AH2AfYB9gH2AfYB9gH2AfYB",
     "9gH2AfYB9gH2AfYB9gECAgIICAQSEgYUFAgCAgoICAwQEA4SEhAUFBICAhQICBYQEBgSEhoUFBwCAh4I",
     "CCASFBIEBCIGBiQIDiYEBCIGBigIDiYCAioICCASFBwSEiwEBC4GBjAIDjIEBC4GBjQIDjICAjYICCAQ",
-    "EDgSEjoUFDwCAj4ICEASFEIcFAYGCAogBAYIKgQGCCwGBggKLgQGCDIEBgg0BAYINgQGCDgEBgg6BAYI",
-    "PAQGCD4EBghABAYIQgQGCAQGEgAEAgAAAAASEhIICAIKDAQODgIAAQoYAAQEBAIEAAAAAAAYGBgYGAEB",
-    "AgQEBAYGBggOCAABDCQABAQEBAIEAAAAAAAAJCQkJCQkAQECBAQEBgYGCAgICgwKDg4IAAECAAQAAAAA",
-    "AgYEAgQEBgg="
+    "EDgSEjoUFDwCAj4ICEASFEIgFAYGCAogBAYIJAQICioEBggsBgYICi4EBggwBgYICjIEBgg0BAYINgQG",
+    "CDgEBgg6BAYIPAQGCD4EBghABAYIQgQGCAQGEgAEAgAAAAASEhIICAIKDAQODgIAAQoYAAQEBAIEAAAA",
+    "AAAYGBgYGAEBAgQEBAYGBggOCAABDCQABAQEBAIEAAAAAAAAJCQkJCQkAQECBAQEBgYGCAgICgwKDg4I",
+    "AAECAAQAAAAAAgYEAgQEBgg="
 ];

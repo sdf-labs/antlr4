@@ -538,9 +538,9 @@ where
     Input: TokenStream\<'input, 'arena, TF> + 'arena,
 {
 	<if(currentRule.modifiers)><currentRule.modifiers:{f | <f> }><else>pub <endif>fn <currentRule.escapedName>(&mut self,<args; separator=",">) -> Result\<&'arena <currentRule.ctxType>All\<'input, 'arena, TF::Tok>, ANTLRError> {
+		<if(currentRule.resumeTarget)><resumeTakeHook(currentRule)><endif>
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
-		<if(currentRule.resumeTarget)><resumeTakeHook(currentRule)><endif>
         let _parentctx = <self()>.base.take_ctx();
         <self()>.base.enter_rule(<currentRule.ctxType>Ext::create(<self()>.get_arena(), _parentctx, <self()>.get_state()<currentRule.args:{a | , <a.escapedName>}>)?, <currentRule.startState>, RULE_<currentRule.name>)?;
         let _local_ctx_fn = |recog: &Self| -> &'arena <currentRule.ctxType>\<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
@@ -583,17 +583,13 @@ where
 {
     #[inline]
 	<if(currentRule.modifiers)><currentRule.modifiers:{f | <f> }><else>pub fn <endif> <currentRule.escapedName>(&mut self,<args; separator=", ">) -> Result\<&'arena <currentRule.ctxType>All\<'input, 'arena, TF::Tok\>, ANTLRError> {
-		<if(currentRule.resumeTarget)>{
-		    let recog = &mut *self;
-		    <resumeTakeHook(currentRule)>
-		}<endif>
 		self.<currentRule.escapedName>_rec(0<currentRule.args:{a | , <a.escapedName>}>)
 	}
 
 	fn <currentRule.escapedName>_rec(&mut self, _p: i32<args:{a | , <a>}>) -> Result\<&'arena <currentRule.ctxType>All\<'input, 'arena, TF::Tok\>, ANTLRError> {
+		<if(currentRule.resumeTarget)><resumeTakeHook(currentRule)><endif>
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
-		<if(currentRule.resumeTarget)><resumeTakeHook(currentRule)><endif>
 		let _parentctx = <self()>.base.take_ctx();
 		let _parentState = <self()>.base.get_state();
 		<self()>.base.enter_recursion_rule(<currentRule.ctxType>Ext::create(<self()>.get_arena(), _parentctx, <self()>.get_state()<currentRule.args:{a | , <a.escapedName>}>)?, <currentRule.startState>, RULE_<currentRule.name>, _p)?;
@@ -858,37 +854,45 @@ descentMaskPredict(choice, groups) ::= <<
 
 DescentGroup(g, tails) ::= <<
     x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 && !<self()>.base.resume_active() => {
-        let _pos0 = <self()>.input.index();
-<g.prefixTokens:{t |        <self()>.base.match_token(<t>,&mut <self()>.err_handler)?;
-}>
         <self()>.base.set_state(<g.callSiteState>);
-        <self()>.base.begin_mute();
-        let _errs = <self()>.base.syntax_error_count();
+        let _neutral_state = <self()>.base.begin_neutral_parse(<g.prefixLen>);
         match <self()>.<g.ruleName>() {
-            Err(e) if !e.is_recoverable() => return Err(e),
+            Err(e) if !e.is_recoverable() => {
+                    <self()>.base.end_neutral_parse(&_neutral_state);
+                    return Err(e)
+                },
             Err(_) => {
-                <self()>.base.end_mute();
-                <self()>.input.seek(_pos0);
+                <self()>.base.end_neutral_parse(&_neutral_state);
                 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)
             },
             Ok(_node) => {
-                <self()>.base.end_mute();
-                if <self()>.base.syntax_error_count() != _errs {
+                if <self()>.base.syntax_error_count() != _neutral_state.2 {
+                    <self()>.base.end_neutral_parse(&_neutral_state);
                     // errorful neutral parse: throw its result away and
                     // defer (muted, so no spurious reports escaped)
-                    <self()>.base.discard_graft(dbt_antlr4::tree::NodeInner::as_node(_node), <g.prefixLen>);
-                    <self()>.input.seek(_pos0);
                     1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)
                 }
                 else {
-                    // the tail token decides on the post-prefix stream;
-                    // only then rewind into resume mode
+                    // the tail token decides on the post-prefix stream.
+                    // An explicit arm (or the static default) rewinds into
+                    // resume mode; anything else rewinds and defers to the
+                    // adaptive engine from the decision start - no resume,
+                    // the chosen body re-parses everything
                     let _tailbit = match <self()>.input.la(1) {
-<tails; separator="\n">
-                        _ => <if(g.defaultBit)><g.defaultBit><else>1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)<endif>
+                        <tails; separator="\n">
+                        _ => <if(g.defaultBit)>Some(<g.defaultBit>)<else>None<endif>,
                     };
-                    <self()>.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_<g.ruleName>, _pos0, <g.prefixLen>);
-                    _tailbit
+                    match _tailbit {
+                        Some(bit) => {
+                            <self()>.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_<g.ruleName>);
+                            <self()>.base.end_neutral_parse(&_neutral_state);
+                            bit
+                        }
+                        None => {
+                            <self()>.base.end_neutral_parse(&_neutral_state);
+                            1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)
+                        }
+                    }
                 }
             },
         }
@@ -896,14 +900,14 @@ DescentGroup(g, tails) ::= <<
     x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32),
 >>
 
-Tail(t) ::= "<t.armKey> => <t.altBit>,"
+Tail(t) ::= "<t.armKey> => Some(<t.altBit>),"
 
 // Resume-mode short-circuit at the top of a resume-target rule: when a
 // shared-descent re-descent reaches the common rule, return the stored
 // prefix context (grafted under the caller, stream restored to the
 // tail by resume_take) instead of parsing it again.
 resumeTakeHook(currentRule) ::= <<
-if let Some(_node) = recog.base.resume_take(RULE_<currentRule.escapedName>) {
+if let Some(_node) = self.base.resume_take(RULE_<currentRule.escapedName>)? {
     return Ok(_node.as_rule_context().unwrap());
 }
 >>
