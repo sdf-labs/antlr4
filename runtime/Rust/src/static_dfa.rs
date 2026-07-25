@@ -79,6 +79,15 @@ pub struct StaticDFATables {
     dispatch_data: Vec<i32>,
     /// Per-dispatch start offset into `dispatch_data`.
     dispatch_at: Vec<usize>,
+    /// Per-table expanded edge lookup, built at load time from the compact
+    /// interval triples in `data` (memory-only; the serialized blob is
+    /// unchanged). `edge_min[t][s]` is state `s`'s base token, `edge_row_at[t]`
+    /// its CSR offsets (`num_states + 1`), and `edge_targets[t]` the flat
+    /// per-state rows: target state for each token in `[min, min+len)`,
+    /// `-1` where the state has no edge. Gives O(1) `edge()`.
+    edge_min: Vec<Vec<i32>>,
+    edge_row_at: Vec<Vec<u32>>,
+    edge_targets: Vec<Vec<i32>>,
 }
 
 /// Borrowed view of one decision's table.
@@ -97,10 +106,14 @@ pub struct StaticDFATable<'a> {
     /// more precise error at the mismatch point - mirroring
     /// `adaptive_predict`'s finished-decision-entry-rule recovery.
     pub fallbacks: &'a [i32],
-    /// Index of each state's first edge `i32` in `edges`; `num_states + 1` entries.
-    pub edge_offsets: &'a [i32],
-    /// Flattened `(lo, hi, target)` triples, sorted by `lo` within each state.
-    pub edges: &'a [i32],
+    /// State `s`'s base token: `edge()` indexes `edge_targets` at
+    /// `edge_row_at[s] + (t - edge_min[s])`.
+    pub edge_min: &'a [i32],
+    /// CSR offsets into `edge_targets`, one per state plus a terminator.
+    pub edge_row_at: &'a [u32],
+    /// Flattened per-state direct-indexed edge rows: target state for each
+    /// token in the state's `[min, min+len)` range, `-1` where no edge.
+    pub edge_targets: &'a [i32],
 }
 
 impl StaticDFATables {
@@ -115,6 +128,9 @@ impl StaticDFATables {
             decision_to_table: Vec::new(),
             dispatch_data: Vec::new(),
             dispatch_at: Vec::new(),
+            edge_min: Vec::new(),
+            edge_row_at: Vec::new(),
+            edge_targets: Vec::new(),
         }
     }
 
@@ -141,6 +157,9 @@ impl StaticDFATables {
         let mut data = Vec::new();
         let mut metas = Vec::with_capacity(num_tables);
         let mut masks = Vec::with_capacity(num_tables);
+        let mut edge_min: Vec<Vec<i32>> = Vec::with_capacity(num_tables);
+        let mut edge_row_at: Vec<Vec<u32>> = Vec::with_capacity(num_tables);
+        let mut edge_targets: Vec<Vec<i32>> = Vec::with_capacity(num_tables);
         let mut decision_to_table = vec![-1i32; num_slots];
 
         for table in 0..num_tables {
@@ -166,6 +185,42 @@ impl StaticDFATables {
             let edges_at = data.len();
             for _ in 0..num_edge_ints {
                 data.push(next());
+            }
+            // Expand this table's compact interval triples into per-state
+            // direct-indexed rows for O(1) edge lookup at parse time. Kept
+            // out of the serialized blob (a memory-only expansion).
+            {
+                let eo = &data[edge_offsets_at..edges_at];
+                let ed = &data[edges_at..edges_at + num_edge_ints];
+                let mut t_min = vec![0i32; num_states];
+                let mut t_row_at = vec![0u32; num_states + 1];
+                let mut t_targets: Vec<i32> = Vec::new();
+                for s in 0..num_states {
+                    t_row_at[s] = t_targets.len() as u32;
+                    let lo_tri = (eo[s] / 3) as usize;
+                    let hi_tri = (eo[s + 1] / 3) as usize;
+                    if lo_tri < hi_tri {
+                        let mut smin = i32::MAX;
+                        let mut smax = i32::MIN;
+                        for tri in lo_tri..hi_tri {
+                            smin = smin.min(ed[tri * 3]);
+                            smax = smax.max(ed[tri * 3 + 1]);
+                        }
+                        t_min[s] = smin;
+                        let base = t_targets.len();
+                        t_targets.resize(base + (smax - smin + 1) as usize, -1);
+                        for tri in lo_tri..hi_tri {
+                            let tgt = ed[tri * 3 + 2];
+                            for tok in ed[tri * 3]..=ed[tri * 3 + 1] {
+                                t_targets[base + (tok - smin) as usize] = tgt;
+                            }
+                        }
+                    }
+                }
+                t_row_at[num_states] = t_targets.len() as u32;
+                edge_min.push(t_min);
+                edge_row_at.push(t_row_at);
+                edge_targets.push(t_targets);
             }
             // v6: alternative-mask section
             let num_mask_states = next() as usize;
@@ -206,6 +261,9 @@ impl StaticDFATables {
             decision_to_table,
             dispatch_data,
             dispatch_at,
+            edge_min,
+            edge_row_at,
+            edge_targets,
         }
     }
 
@@ -243,18 +301,14 @@ impl StaticDFATables {
             }
         }
         assert!(t >= 0, "no static DFA table for decision {}", decision);
-        let (accepts_at, fallbacks_at, edge_offsets_at, edges_at) = self.metas[t as usize];
-        let end = self
-            .metas
-            .get(t as usize + 1)
-            .map(|m| m.0)
-            .unwrap_or(self.data.len());
+        let (accepts_at, fallbacks_at, edge_offsets_at, _edges_at) = self.metas[t as usize];
         Some(StaticDFATable {
             accepts: &self.data[accepts_at..fallbacks_at],
             masks: &self.masks[t as usize],
             fallbacks: &self.data[fallbacks_at..edge_offsets_at],
-            edge_offsets: &self.data[edge_offsets_at..edges_at],
-            edges: &self.data[edges_at..end],
+            edge_min: &self.edge_min[t as usize],
+            edge_row_at: &self.edge_row_at[t as usize],
+            edge_targets: &self.edge_targets[t as usize],
         })
     }
 }
@@ -307,21 +361,26 @@ impl<'a> StaticDFATable<'a> {
         }
     }
 
-    /// Successor of `state` on token type `t`, if any (binary search).
+    /// Successor of `state` on token type `t`, if any. O(1): the compact
+    /// serialized interval triples are expanded into a per-state direct-
+    /// indexed row at load time (see [`StaticDFATables::from_int_stream`]).
     #[inline]
     pub fn edge(&self, state: usize, t: i32) -> Option<usize> {
-        let mut lo = (self.edge_offsets[state] / 3) as usize;
-        let mut hi = (self.edge_offsets[state + 1] / 3) as usize;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if t < self.edges[mid * 3] {
-                hi = mid;
-            } else if t > self.edges[mid * 3 + 1] {
-                lo = mid + 1;
-            } else {
-                return Some(self.edges[mid * 3 + 2] as usize);
-            }
+        let base = self.edge_row_at[state] as usize;
+        let end = self.edge_row_at[state + 1] as usize;
+        let idx = t - self.edge_min[state];
+        if idx < 0 {
+            return None;
         }
-        None
+        let pos = base + idx as usize;
+        if pos >= end {
+            return None;
+        }
+        let target = self.edge_targets[pos];
+        if target < 0 {
+            None
+        } else {
+            Some(target as usize)
+        }
     }
 }
