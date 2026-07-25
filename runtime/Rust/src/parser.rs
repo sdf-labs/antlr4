@@ -514,10 +514,21 @@ where
     /// Diagnostic escape tracing for `dfa_predict` (`ANTLR_DFA_TRACE=1`):
     /// logs every prediction the static tables defer to the adaptive
     /// engine, the tool for finding which decisions a given input keeps
-    /// escaping on. Checked once per process.
+    /// escaping on. Debug builds only - in release it is a compile-time
+    /// `false` so every trace branch is eliminated from the hot walk.
+    #[cfg(debug_assertions)]
     fn dfa_trace() -> bool {
-        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *TRACE.get_or_init(|| std::env::var_os("ANTLR_DFA_TRACE").is_some())
+        static TRACE: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var_os("ANTLR_DFA_TRACE").is_some());
+        *TRACE
+    }
+
+    /// Release builds: tracing is compiled out entirely (see the
+    /// debug-build variant above).
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn dfa_trace() -> bool {
+        false
     }
 
     pub fn dfa_predict(&mut self, decision: i32) -> Result<i32, ANTLRError> {
@@ -728,7 +739,10 @@ where
         let mut s = 0usize;
         let mut i = 1isize;
         loop {
-            if dfa.is_escape(s) {
+            // One `accepts` load serves both the escape and accept checks
+            // (previously loaded twice, via is_escape() then accept()).
+            let alt = dfa.accepts[s];
+            if alt == crate::static_dfa::ESCAPE {
                 // hybrid-table escape: the caller reruns the prediction
                 // through the adaptive engine (no input was consumed, so
                 // the rescan starts clean)
@@ -760,7 +774,7 @@ where
                 }
                 return Ok(mask);
             }
-            if let Some(alt) = dfa.accept(s) {
+            if alt > 0 {
                 return Ok(1u64 << (alt - 1));
             }
             let t = self.input.la(i);
