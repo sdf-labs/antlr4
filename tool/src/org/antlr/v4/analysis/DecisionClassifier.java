@@ -349,6 +349,23 @@ public class DecisionClassifier {
 	 */
 	public boolean abortOnUntrustedConflict = false;
 
+	/**
+	 * When set (report mode, first pass), treat an untrusted conflict in a
+	 * non-hybrid attempt as a state overflow instead of exploring the
+	 * doomed attempt to completion. Unlike {@link #abortOnUntrustedConflict}
+	 * (table mode), this preserves classify()'s full widening-then-hybrid
+	 * flow. For any decision that resolves to a static or hybrid table the
+	 * resulting {@link Result} is therefore identical to a full exploration
+	 * (clean tables never hit an untrusted conflict, so are never
+	 * short-circuited; hybrid detail comes from the untouched hybrid pass),
+	 * while the deep doomed closure that dominates report time is skipped.
+	 * A decision that instead ends on the adaptive engine may get a
+	 * different category/conflict inventory under this flag; {@link #report}
+	 * re-classifies exactly those without it. Left false for table building
+	 * (which must not perturb which tables it emits).
+	 */
+	public boolean abortInfAsOverflow = false;
+
 	protected final Grammar g;
 	protected final ATN atn;
 	protected final IntervalSet allTokens;
@@ -1496,6 +1513,26 @@ public class DecisionClassifier {
 						res.numDfaStates = states.size();
 						res.category = Category.CONTEXT_SENSITIVE;
 						return false;
+					}
+					else if (abortInfAsOverflow) {
+						// Report mode: an untrusted conflict means this exact
+						// (or context-free) attempt cannot yield a clean
+						// table, so its remaining expansion is discarded
+						// anyway - classify() proceeds to the next widening
+						// depth and then the hybrid attempt, which is what
+						// produces the reported result. Short-circuit the
+						// doomed expansion by declaring overflow here, taking
+						// exactly the same downstream path a real state
+						// overflow would. This is output-identical to the
+						// full exploration (a coarser bound-0
+						// over-approximation carries at least the exact
+						// attempt's conflicts, so it can never resolve a
+						// table the exact attempt could not) but avoids the
+						// deep doomed closure that dominates -Xdecision-report
+						// time. Not used for table building, which keeps its
+						// own abort above.
+						overflow = true;
+						break;
 					}
 				}
 				continue;
@@ -2661,7 +2698,31 @@ public class DecisionClassifier {
 	/** Build the human-readable report printed by the -Xdecision-report tool option. */
 	public static String report(Grammar g) {
 		DecisionClassifier classifier = new DecisionClassifier(g);
+		// First pass: short-circuit doomed exact/context-free attempts as
+		// overflow (see abortInfAsOverflow). This is transparent for every
+		// decision that resolves to a static or hybrid table - clean tables
+		classifier.abortInfAsOverflow = true;
+		// and hybrid results come from the untouched hybrid pass - but a
+		// decision that ends up on the adaptive engine (wholly, or a
+		// precedence class of it) would otherwise display the short-circuited
+		// attempt's category/conflicts instead of the full-exploration ones.
+		classifier.abortInfAsOverflow = true;
 		List<Result> results = classifier.classifyAll();
+		// Second pass: re-classify exactly those remaining adaptive-fallback
+		// decisions without the shortcut, restoring their true category and
+		// complete conflict inventory - the detail the report exists to
+		// provide. They are rare (a grammar with many is barely statically
+		// covered at all), so accuracy is restored at negligible cost; on
+		// well-covered grammars this set is empty and the report stays fast.
+		classifier.abortInfAsOverflow = false;
+		List<DecisionState> decs = g.atn.decisionToState;
+		for (int i = 0; i < results.size(); i++) {
+			Result r = results.get(i);
+			boolean adaptiveFallback = r.category == Category.LR_PRECEDENCE
+				? (r.precDfa == null || r.adaptiveClasses > 0)
+				: (r.category != Category.LL1 && r.dfa == null);
+			if (adaptiveFallback) results.set(i, classifier.classify(decs.get(i)));
+		}
 
 		Map<Category, Integer> counts = new LinkedHashMap<Category, Integer>();
 		for (Category c : Category.values()) counts.put(c, 0);
