@@ -281,8 +281,24 @@ public class DecisionClassifier {
 	/** Taint bits that make any conflict untrusted outright. */
 	protected static final int HARD_TAINT = WIDENED_TAINT | PRECPRED_TAINT;
 
-	/** Hard cap on DFA states per decision (per construction attempt). */
-	public int maxDfaStates = 2000;
+	/**
+	 * Hard cap on DFA states per decision (per construction attempt).
+	 *
+	 * <p>This is an overflow trigger, not a coverage target: any decision
+	 * that needs more than this many states is abandoned to a hybrid table
+	 * or {@code adaptivePredict} (always sound - a smaller cap only shifts
+	 * work to the adaptive engine, it can never mis-predict). It exists to
+	 * bound the cost of the doomed exact-context attempt on decisions that
+	 * require unbounded lookahead: that attempt expands to exactly this
+	 * many states before overflowing, so the cap is a direct linear factor
+	 * on the analyzer's worst-case time. Across the SQL dialect grammars
+	 * the largest table any decision actually resolves to is ~700 states,
+	 * so the default leaves comfortable headroom while keeping the doomed
+	 * frontier ~2x smaller than the historical 2000. Override with
+	 * {@code -Dantlr.dfa.maxDfaStates=N} for grammars with unusually deep
+	 * decisions.</p>
+	 */
+	public int maxDfaStates = Integer.parseInt(System.getProperty("antlr.dfa.maxDfaStates", "1000"));
 
 	/**
 	 * Hybrid-table construction bounds (see {@link Category#HYBRID}): the
@@ -1134,7 +1150,7 @@ public class DecisionClassifier {
 		this.faithCache = new java.util.IdentityHashMap<PredictionContext, Boolean>();
 		this.widenedJoints =
 			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>());
-		Map<Set<ATNConfig>, Integer> stateIds = new HashMap<Set<ATNConfig>, Integer>();
+		Map<ConfigSetKey, Integer> stateIds = new HashMap<ConfigSetKey, Integer>();
 		List<Set<ATNConfig>> states = new ArrayList<Set<ATNConfig>>();
 		List<List<Integer>> edges = new ArrayList<List<Integer>>();
 		List<List<IntervalSet>> edgeLabels = new ArrayList<List<IntervalSet>>();
@@ -1144,7 +1160,7 @@ public class DecisionClassifier {
 		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
-		Set<Object> startBusy = new HashSet<Object>();
+		Set<Object> startBusy = new HashSet<Object>(1024);
 		this.precStartClosure = precRuleIndex >= 0;
 		for (int i = 0; i < s.getNumberOfTransitions(); i++) {
 			closure(new ATNConfig(s.transition(i).target, i+1, EmptyPredictionContext.Instance),
@@ -1164,7 +1180,7 @@ public class DecisionClassifier {
 					c.reachesIntoOuterContext, c.isPrecedenceFilterSuppressed(), c.context);
 			}
 		}
-		stateIds.put(start, 0);
+		stateIds.put(new ConfigSetKey(start), 0);
 		states.add(start);
 		edges.add(new ArrayList<Integer>());
 		edgeLabels.add(new ArrayList<IntervalSet>());
@@ -1536,11 +1552,12 @@ public class DecisionClassifier {
 			fallbackAlts.set(d, fallback);
 
 			for (LabeledSuccessor ls : successors(configs, res)) {
-				Integer id = stateIds.get(ls.configs);
+				ConfigSetKey lsKey = new ConfigSetKey(ls.configs);
+				Integer id = stateIds.get(lsKey);
 				if (id == null) {
 					if (states.size() >= maxDfaStates) { overflow = true; break; }
 					id = states.size();
-					stateIds.put(ls.configs, id);
+					stateIds.put(lsKey, id);
 					states.add(ls.configs);
 					edges.add(new ArrayList<Integer>());
 					edgeLabels.add(new ArrayList<IntervalSet>());
@@ -1759,6 +1776,29 @@ public class DecisionClassifier {
 	}
 
 	/**
+	 * Map key wrapping a configuration set with its hash computed once.
+	 * The DFA-state dedup map ({@code stateIds}) and the per-state
+	 * successor-merge map ({@code bySuccessor}) are keyed by config sets;
+	 * a raw {@code Set} key recomputes {@link java.util.AbstractSet#hashCode}
+	 * - O(|set|), summing every member's hash - on every get/put. Caching
+	 * it collapses those repeated scans to one per set while preserving
+	 * set equality (equals still falls back to {@code Set.equals}, but only
+	 * on a hash collision).
+	 */
+	protected static final class ConfigSetKey {
+		final Set<ATNConfig> set;
+		final int hash;
+		ConfigSetKey(Set<ATNConfig> set) { this.set = set; this.hash = set.hashCode(); }
+		@Override public int hashCode() { return hash; }
+		@Override public boolean equals(Object o) {
+			if (this == o) return true;
+			if (!(o instanceof ConfigSetKey)) return false;
+			ConfigSetKey k = (ConfigSetKey)o;
+			return hash == k.hash && set.equals(k.set);
+		}
+	}
+
+	/**
 	 * Compute the successor configuration sets of a DFA state, one edge per
 	 * distinct successor set, labeled with the full token class (never per
 	 * token). Token classes are the equivalence classes of the partition
@@ -1833,11 +1873,11 @@ public class DecisionClassifier {
 		}
 
 		// close each class; merge classes that reach the same successor set
-		Map<Set<ATNConfig>, IntervalSet> bySuccessor = new LinkedHashMap<Set<ATNConfig>, IntervalSet>();
+		Map<ConfigSetKey, IntervalSet> bySuccessor = new LinkedHashMap<ConfigSetKey, IntervalSet>();
 		for (Map.Entry<BitSet, IntervalSet> e : classLabels.entrySet()) {
 			BitSet key = e.getKey();
 			Set<ATNConfig> succ = new LinkedHashSet<ATNConfig>();
-			Set<Object> busy = new HashSet<Object>();
+			Set<Object> busy = new HashSet<Object>(1024);
 			for (int m = key.nextSetBit(0); m >= 0; m = key.nextSetBit(m+1)) {
 				ATNConfig c = moveConfigs.get(m);
 				if (moveIsStop.get(m)) {
@@ -1871,9 +1911,10 @@ public class DecisionClassifier {
 				}
 			}
 			succ = canonical(succ);
-			IntervalSet merged = bySuccessor.get(succ);
+			ConfigSetKey succKey = new ConfigSetKey(succ);
+			IntervalSet merged = bySuccessor.get(succKey);
 			if (merged == null) {
-				bySuccessor.put(succ, e.getValue());
+				bySuccessor.put(succKey, e.getValue());
 			}
 			else {
 				merged.addAll(e.getValue());
@@ -1881,8 +1922,8 @@ public class DecisionClassifier {
 		}
 
 		List<LabeledSuccessor> result = new ArrayList<LabeledSuccessor>(bySuccessor.size());
-		for (Map.Entry<Set<ATNConfig>, IntervalSet> e : bySuccessor.entrySet()) {
-			result.add(new LabeledSuccessor(e.getValue(), e.getKey()));
+		for (Map.Entry<ConfigSetKey, IntervalSet> e : bySuccessor.entrySet()) {
+			result.add(new LabeledSuccessor(e.getValue(), e.getKey().set));
 		}
 		return result;
 	}
@@ -2404,8 +2445,21 @@ public class DecisionClassifier {
 	protected Map<PredictionContext, Boolean> faithCache;
 
 	protected static boolean hasReturnState(PredictionContext ctx, int returnStateNumber) {
-		return hasReturnState(ctx, returnStateNumber,
-			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()));
+		// Fast path: singleton chains (the overwhelmingly common context
+		// shape) are cycle-free linked lists, so they need no visited set -
+		// walking parent pointers avoids allocating an IdentityHashMap on
+		// every call (this runs once per rule transition per closure step).
+		// Fall back to the DAG walk only when a merged (array) node appears.
+		while (ctx != null && !ctx.isEmpty()) {
+			if (ctx.size() != 1) {
+				return hasReturnState(ctx, returnStateNumber,
+					java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()));
+			}
+			if (ctx.getReturnState(0) == returnStateNumber) return true;
+			if (ctx.getReturnState(0) == PredictionContext.EMPTY_RETURN_STATE) return false;
+			ctx = ctx.getParent(0);
+		}
+		return false;
 	}
 
 	private static boolean hasReturnState(PredictionContext ctx, int returnStateNumber, Set<PredictionContext> visited) {
