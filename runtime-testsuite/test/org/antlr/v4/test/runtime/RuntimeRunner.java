@@ -143,8 +143,20 @@ public abstract class RuntimeRunner implements AutoCloseable {
 		cacheDirectory = new File(System.getProperty("java.io.tmpdir"), "ANTLR-runtime-testsuite-cache").getAbsolutePath();
 	}
 
+	/**
+	 * Identifies a distinct runner configuration sharing a language runtime
+	 * (e.g. Rust with and without -Xstatic-dfa). Defaults to the language
+	 * itself. Configurations get separate on-disk caches and separate
+	 * initialization locks so that two configurations of one language can
+	 * never clean or rebuild a cache directory out from under the other,
+	 * even when run concurrently in the same or in separate JVMs.
+	 */
+	protected String getRuntimeConfigurationName() {
+		return getLanguage();
+	}
+
 	protected final String getCachePath() {
-		return getCachePath(getLanguage());
+		return getCachePath(getRuntimeConfigurationName());
 	}
 
 	public static String getCachePath(String language) {
@@ -268,15 +280,15 @@ public abstract class RuntimeRunner implements AutoCloseable {
 	}
 
 	private boolean initAntlrRuntimeIfRequired(RunOptions runOptions) {
-		String language = getLanguage();
+		String configurationName = getRuntimeConfigurationName();
 		InitializationStatus status;
 
-		// Create initialization status for every runtime with lock object
+		// Create initialization status for every runtime configuration with lock object
 		synchronized (runtimeInitializationStatuses) {
-			status = runtimeInitializationStatuses.get(language);
+			status = runtimeInitializationStatuses.get(configurationName);
 			if (status == null) {
 				status = new InitializationStatus();
-				runtimeInitializationStatuses.put(language, status);
+				runtimeInitializationStatuses.put(configurationName, status);
 			}
 		}
 
