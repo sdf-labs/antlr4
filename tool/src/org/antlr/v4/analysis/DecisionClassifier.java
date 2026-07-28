@@ -1223,7 +1223,7 @@ public class DecisionClassifier {
 		List<Integer> fallbackAlts = new ArrayList<Integer>(); // 0 = none
 		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
 		List<Set<Integer>> ownRoots = new ArrayList<Set<Integer>>(); // postfix guard roots entering each state
-		List<Integer> guardCandidates = new ArrayList<Integer>(); // take-vetoed conflict states
+		Map<Integer, BitSet> guardCandidates = new LinkedHashMap<Integer, BitSet>(); // take-vetoed conflict states -> their conflicting alternatives (null for budget escapes, never conflict-analyzed)
 		this.currentDecisionRule = s.ruleIndex;
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
@@ -1481,7 +1481,7 @@ public class DecisionClassifier {
 						// vetoed only by the mirror check: a candidate for
 						// the guarded-take escape (resolved after
 						// construction, once guard roots have propagated)
-						guardCandidates.add(d);
+						guardCandidates.put(d, conflicting);
 					}
 				}
 
@@ -1642,6 +1642,13 @@ public class DecisionClassifier {
 					}
 					else {
 						acceptAlts.set(d, StaticDFA.ESCAPE);
+						if (currentPostfixShape != null
+							&& alts.cardinality() == 2 && alts.get(1) && alts.get(2)) {
+							// budget escape of a take/skip state: never conflict-
+							// analyzed, but the guarded-take escape can still
+							// resolve it (eligibility is evaluated at finalize)
+							guardCandidates.put(d, null);
+						}
 					}
 				}
 				continue;
@@ -1732,10 +1739,12 @@ public class DecisionClassifier {
 		}
 
 		int escapes = 0;
+		int guardedCount = 0;
 		for (int a : acceptAlts) {
 			if (a == StaticDFA.ESCAPE) escapes++;
+			else if (a == StaticDFA.GUARDED) guardedCount++;
 		}
-		if (escapes > 0) {
+		if (escapes > 0 || guardedCount > 0) {
 			// hybrid table: emit only if the start state itself resolves
 			// something - a start-state escape means nothing is decidable
 			res.category = Category.HYBRID;
@@ -1816,10 +1825,10 @@ public class DecisionClassifier {
 											 List<List<Integer>> edges,
 											 List<Integer> acceptAlts,
 											 List<Long> acceptMasks,
-											 List<Set<Integer>> ownRoots,
-											 List<Integer> guardCandidates,
-											 List<Integer> guardAlts,
-											 Result res) {
+										 List<Set<Integer>> ownRoots,
+										 Map<Integer, BitSet> guardCandidates,
+										 List<Integer> guardAlts,
+										 Result res) {
 		int n = states.size();
 		// propagate guard roots through the edge graph to a fixpoint:
 		// through[s] = own[s] ∪ ∪_{p→s} through[p]
@@ -1847,15 +1856,28 @@ public class DecisionClassifier {
 
 		Set<Integer> G = new HashSet<Integer>();
 		List<Integer> guarded = new ArrayList<Integer>();
-		for (int d : guardCandidates) {
+		for (Map.Entry<Integer, BitSet> cand : guardCandidates.entrySet()) {
+			int d = cand.getKey();
 			if (acceptAlts.get(d) != StaticDFA.ESCAPE || acceptMasks.get(d) != 0) continue;
 			Set<Integer> roots = through.get(d);
 			if (roots == null || roots.isEmpty()) continue;
 			boolean eligible = true;
+			boolean realTake = false;
 			for (ATNConfig c : states.get(d)) {
-				if (c.alt != 2) continue;
 				int taint = c.reachesIntoOuterContext;
-				if ((taint & WIDENED_TAINT) != 0) { eligible = false; break; }
+				if (c.alt == 1
+					&& (taint & (WIDENED_TAINT|FOREIGN_CONSUME_TAINT)) == 0) {
+					realTake = true;
+				}
+				if (c.alt != 2) continue;
+				if ((taint & FOREIGN_CONSUME_TAINT) != 0) { eligible = false; break; }
+				// a widening-born skip configuration is an analysis artifact
+				// unless it is rooted: then its bottom frame is a real follow
+				// state and the guard covers its realizability
+				if ((taint & (WIDENED_TAINT|ROOTED_TAINT)) == WIDENED_TAINT) {
+					eligible = false;
+					break;
+				}
 				if (c.state.ruleIndex == s.ruleIndex) continue;
 				if ((taint & ROOTED_TAINT) != 0) continue;
 				if (bottomFrameIs(c.context, currentPostfixShape.blockEndState,
@@ -1866,7 +1888,12 @@ public class DecisionClassifier {
 				eligible = false;
 				break;
 			}
-			if (!eligible) continue;
+			if (!eligible || !realTake) continue;
+			if (cand.getValue() != null) {
+				res.approxConflicts.remove(cand.getValue());
+				res.contextSensitiveConflicts.remove(cand.getValue());
+				res.exactAmbigConflicts.add(cand.getValue());
+			}
 			acceptAlts.set(d, StaticDFA.GUARDED);
 			guardAlts.set(d, 1);
 			guarded.add(d);
