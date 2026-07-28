@@ -18,6 +18,18 @@ import java.util.List;
  * prediction, so any deviation of the table-driven path fails the test.
  */
 public class RustStaticDFARunner extends RustRunner {
+	/**
+	 * Keep this configuration's build cache separate from the adaptive
+	 * suite's: both otherwise share {@code <tmp>/ANTLR-runtime-testsuite-cache/Rust},
+	 * where {@code cargo clean} during one suite's runtime initialization can
+	 * delete the rlib out from under the other suite's compiles when they
+	 * overlap (same JVM with concurrent classes, or concurrent Maven JVMs).
+	 */
+	@Override
+	protected String getRuntimeConfigurationName() {
+		return "Rust-static-dfa";
+	}
+
 	@Override
 	protected List<String> getTargetToolOptions(RunOptions ro) {
 		List<String> options = super.getTargetToolOptions(ro);
