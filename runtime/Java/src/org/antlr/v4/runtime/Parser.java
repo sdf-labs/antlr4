@@ -566,6 +566,17 @@ public abstract class Parser extends Recognizer<Token, ParserATNSimulator> {
 		while (true) {
 			int alt = tables.accept(table, s);
 			if ( alt>0 ) return alt;
+			if ( alt==StaticDFATables.GUARDED ) {
+				// guarded take of an optional-postfix decision: resolve to
+				// take unless the real parse stack's epsilon-pop chase from
+				// the decision's block end can reach a guard root
+				if ( !tables.guardDefers(table, _ctx) ) return tables.guardedAlt(table, s);
+				if ( System.getProperty("antlr.dfa.trace") != null ) {
+					System.err.println("DFA-TRACE guard-defer"
+						+" d="+decision+" prec="+getPrecedence()+" state="+s+" la1="+_input.LA(1));
+				}
+				return getInterpreter().adaptivePredict(_input, decision, _ctx);
+			}
 			if ( alt<0 ) {
 				// hybrid-table escape (-1) or mask-accept state (-2; Java
 				// has no factored codegen): rerun the prediction through

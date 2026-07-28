@@ -758,6 +758,54 @@ where
                 }
                 return Ok(0);
             }
+            if alt == crate::static_dfa::GUARDED {
+                // guarded take of an optional-postfix decision: resolve
+                // to take unless the real parse stack's epsilon-pop
+                // chase from the decision's block end can reach a guard
+                // root (an invoking state in the table's danger set);
+                // the walk stops at the first invoking state whose
+                // follow region cannot reach its own rule's stop.
+                let mut defers = false;
+                let mut c = self.ctx();
+                while let Some(node) = c {
+                    let inv = node.get_invoking_state();
+                    if inv < 0 {
+                        break;
+                    }
+                    match dfa.guard_step(inv) {
+                        Some(true) => {
+                            defers = true;
+                            break;
+                        }
+                        Some(false) => break,
+                        None => c = node.get_parent(),
+                    }
+                }
+                if !defers {
+                    if Self::dfa_trace() {
+                        eprintln!(
+                            "DFA-TRACE guard-take d={} prec={} state={} depth={} la1={}",
+                            decision,
+                            precedence,
+                            s,
+                            i - 1,
+                            self.input.la(1)
+                        );
+                    }
+                    return Ok(1u64 << (dfa.guarded_alt(s).unwrap() - 1));
+                }
+                if Self::dfa_trace() {
+                    eprintln!(
+                        "DFA-TRACE guard-defer d={} prec={} state={} depth={} la1={}",
+                        decision,
+                        precedence,
+                        s,
+                        i - 1,
+                        self.input.la(1)
+                    );
+                }
+                return Ok(0);
+            }
             if let Some(mask) = dfa.accept_mask(s) {
                 // mask-accept: the live alternatives are covered by one
                 // prefix-factor group

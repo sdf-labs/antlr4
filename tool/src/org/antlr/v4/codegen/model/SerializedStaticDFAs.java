@@ -41,16 +41,33 @@ import java.util.Map;
  *   fallbacks[numStates]            (error-avoidance alt per state; 0 = none)
  *   edgeOffsets[numStates+1]        (index of each state's first edge int)
  *   edges[numEdgeInts]              ((lo, hi, target) triples, lo-sorted per state)
- *   numMaskStates                   (states accepting with an alternative
- *                                    mask instead of a unique alt: the live
- *                                    set is covered by one prefix-factor
- *                                    group; the parser executes the shared
- *                                    prefix and resolves at the tail decision)
- *   for each mask state:            (sorted by state index)
- *     state
- *     numAlts
- *     alts[numAlts]                 (the group's member alternatives)
- * numPrecedenceDispatches
+	 *   numMaskStates                   (states accepting with an alternative
+	 *                                    mask instead of a unique alt: the live
+	 *                                    set is covered by one prefix-factor
+	 *                                    group; the parser executes the shared
+	 *                                    prefix and resolves at the tail decision)
+	 *   for each mask state:            (sorted by state index)
+	 *     state
+	 *     numAlts
+	 *     alts[numAlts]                 (the group's member alternatives)
+	 *   numGuardedStates                (guarded-take states of an
+	 *                                    optional-postfix decision: the walker
+	 *                                    evaluates the decision's stack guard and
+	 *                                    resolves to the given alternative when
+	 *                                    it passes, deferring to adaptivePredict
+	 *                                    when the stack trips a danger state)
+	 *   for each guarded state:         (sorted by state index)
+	 *     state
+	 *     alt                           (the take alternative)
+	 *   numDanger                       (0 when numGuardedStates == 0)
+	 *   danger[numDanger]               (sorted invoking states whose follow
+	 *                                    epsilon-reaches a guard root: the guard
+	 *                                    defers when the stack carries one)
+	 *   numPass
+	 *   pass[numPass]                   (sorted invoking states whose follow
+	 *                                    epsilon-reaches their rule's stop: the
+	 *                                    guard keeps walking the stack past them)
+	 * numPrecedenceDispatches
  * for each dispatch:                (a left-recursive precedence loop decision)
  *   decision
  *   numCutoffs
@@ -63,8 +80,10 @@ import java.util.Map;
  * their table index.</p>
  */
 public class SerializedStaticDFAs extends OutputModelObject {
-	/** v6: per-table alternative-mask section (prefix-factor groups). */
-	public static final int FORMAT_VERSION = 6;
+	/** v7: per-table guarded-take section (optional-postfix guards). */
+	public static final int FORMAT_VERSION = 7;
+
+	private static final int[] NO_INTS = new int[0];
 
 	public final int numTables;
 	/** Base64 text segments of the serialized blob, one rendered per line. */
@@ -168,6 +187,25 @@ public class SerializedStaticDFAs extends OutputModelObject {
 					}
 				}
 			}
+			// guarded-take section (v7)
+			int numGuardedStates = 0;
+			for (int v : dfa.guardedAlts) {
+				if (v != 0) numGuardedStates++;
+			}
+			data.add(numGuardedStates);
+			if (numGuardedStates > 0) {
+				for (int s = 0; s < dfa.numStates; s++) {
+					if (dfa.guardedAlts[s] == 0) continue;
+					data.add(s);
+					data.add(dfa.guardedAlts[s]);
+				}
+			}
+			int[] danger = dfa.guardDanger != null ? dfa.guardDanger : NO_INTS;
+			int[] pass = dfa.guardPass != null ? dfa.guardPass : NO_INTS;
+			data.add(danger.length);
+			for (int v : danger) data.add(v);
+			data.add(pass.length);
+			for (int v : pass) data.add(v);
 			int escapes = 0;
 			for (int v : dfa.accepts) {
 				if (v == StaticDFA.ESCAPE) escapes++;
@@ -177,7 +215,8 @@ public class SerializedStaticDFAs extends OutputModelObject {
 				+": "+(dfa.cyclic ? "LL(*) cyclic" : "LL(k), k="+dfa.maxK)
 				+", "+dfa.numStates+" states"
 				+(escapes > 0 ? ", "+escapes+" adaptive escapes" : "")
-				+(numMaskStates > 0 ? ", "+numMaskStates+" mask accepts" : ""));
+				+(numMaskStates > 0 ? ", "+numMaskStates+" mask accepts" : "")
+				+(numGuardedStates > 0 ? ", "+numGuardedStates+" guarded takes" : ""));
 		}
 		data.add(dispatches.size());
 		for (int[] entry : dispatches) {
@@ -194,7 +233,10 @@ public class SerializedStaticDFAs extends OutputModelObject {
 				&& Arrays.equals(o.acceptMasks, t.acceptMasks)
 				&& Arrays.equals(o.fallbacks, t.fallbacks)
 				&& Arrays.equals(o.edgeOffsets, t.edgeOffsets)
-				&& Arrays.equals(o.edges, t.edges))) {
+				&& Arrays.equals(o.edges, t.edges)
+				&& Arrays.equals(o.guardedAlts, t.guardedAlts)
+				&& Arrays.equals(o.guardDanger, t.guardDanger)
+				&& Arrays.equals(o.guardPass, t.guardPass))) {
 				return i;
 			}
 		}

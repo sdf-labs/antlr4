@@ -29,6 +29,20 @@
 //!   fallbacks[numStates]           (error-avoidance alt per state; 0 = none)
 //!   edgeOffsets[numStates+1]       (index of each state's first edge i32)
 //!   edges[numEdgeInts]             ((lo, hi, target) triples, lo-sorted per state)
+//!   numMaskStates                  (alternative-mask accepts; v6)
+//!   for each mask state:
+//!     state, numAlts, alts[numAlts]
+//!   numGuardedStates               (guarded-take states of an
+//!                                   optional-postfix decision; v7: the walker
+//!                                   evaluates the decision's stack guard and
+//!                                   resolves to the given alternative when it
+//!                                   passes, deferring to adaptive prediction
+//!                                   when the stack trips a danger state)
+//!   for each guarded state:        (sorted by state index)
+//!     state, alt
+//!   numDanger, danger[numDanger]   (sorted invoking states tripping the guard)
+//!   numPass, pass[numPass]         (sorted invoking states the guard walk
+//!                                   pops past)
 //! numPrecedenceDispatches
 //! for each dispatch:               (a left-recursive precedence loop decision)
 //!   decision
@@ -48,8 +62,9 @@
 
 /// Format version understood by this runtime; must match the tool's
 /// `SerializedStaticDFAs.FORMAT_VERSION`. v6 adds the per-table
-/// alternative-mask section (prefix-factor groups).
-pub const FORMAT_VERSION: i32 = 6;
+/// alternative-mask section (prefix-factor groups); v7 adds the
+/// per-table guarded-take section (optional-postfix stack guards).
+pub const FORMAT_VERSION: i32 = 7;
 
 /// The deserialized static prediction tables of one generated parser.
 ///
@@ -71,6 +86,16 @@ pub struct StaticDFATables {
     /// Per-table alternative-mask accepts (bit 1<<(alt-1) per live
     /// alternative of the covering prefix-factor group; 0 = none).
     masks: Vec<Vec<u64>>,
+    /// Per-table guarded-take resolution alt per state (0 = not guarded);
+    /// absent for tables without guarded states.
+    guarded_alts: Vec<Option<Vec<i32>>>,
+    /// Per-table sorted invoking states tripping the decision's stack
+    /// guard (its epsilon-pop chase can reach a guard root past them).
+    guard_danger: Vec<Vec<i32>>,
+    /// Per-table sorted invoking states whose follow region reaches their
+    /// own rule's stop over epsilon; the guard walk pops past them and
+    /// stops at the first invoking state not listed.
+    guard_pass: Vec<Vec<i32>>,
     /// decision number -> table index (`>= 0`), `-1` (no table), or
     /// `-(dispatch index) - 2` (precedence-dispatched decision).
     decision_to_table: Vec<i32>,
@@ -106,6 +131,13 @@ pub struct StaticDFATable<'a> {
     /// more precise error at the mismatch point - mirroring
     /// `adaptive_predict`'s finished-decision-entry-rule recovery.
     pub fallbacks: &'a [i32],
+    /// Guarded-take resolution alt per state; `None` for tables without
+    /// guarded states (entry 0 = not guarded).
+    pub guarded_alts: Option<&'a [i32]>,
+    /// Sorted invoking states tripping this decision's stack guard.
+    pub guard_danger: &'a [i32],
+    /// Sorted invoking states the guard walk may pop past.
+    pub guard_pass: &'a [i32],
     /// State `s`'s base token: `edge()` indexes `edge_targets` at
     /// `edge_row_at[s] + (t - edge_min[s])`.
     pub edge_min: &'a [i32],
@@ -125,6 +157,9 @@ impl StaticDFATables {
             data: Vec::new(),
             metas: Vec::new(),
             masks: Vec::new(),
+            guarded_alts: Vec::new(),
+            guard_danger: Vec::new(),
+            guard_pass: Vec::new(),
             decision_to_table: Vec::new(),
             dispatch_data: Vec::new(),
             dispatch_at: Vec::new(),
@@ -157,6 +192,9 @@ impl StaticDFATables {
         let mut data = Vec::new();
         let mut metas = Vec::with_capacity(num_tables);
         let mut masks = Vec::with_capacity(num_tables);
+        let mut guarded_alts = Vec::with_capacity(num_tables);
+        let mut guard_danger = Vec::with_capacity(num_tables);
+        let mut guard_pass = Vec::with_capacity(num_tables);
         let mut edge_min: Vec<Vec<i32>> = Vec::with_capacity(num_tables);
         let mut edge_row_at: Vec<Vec<u32>> = Vec::with_capacity(num_tables);
         let mut edge_targets: Vec<Vec<i32>> = Vec::with_capacity(num_tables);
@@ -235,6 +273,31 @@ impl StaticDFATables {
                 table_masks[state] = bits;
             }
             masks.push(table_masks);
+            // v7: guarded-take section
+            let num_guarded_states = next() as usize;
+            let mut table_guarded = None;
+            if num_guarded_states > 0 {
+                let mut alts = vec![0i32; num_states];
+                for _ in 0..num_guarded_states {
+                    let state = next() as usize;
+                    alts[state] = next();
+                    data[accepts_at + state] = GUARDED;
+                }
+                table_guarded = Some(alts);
+            }
+            guarded_alts.push(table_guarded);
+            let num_danger = next() as usize;
+            let mut danger = Vec::with_capacity(num_danger);
+            for _ in 0..num_danger {
+                danger.push(next());
+            }
+            guard_danger.push(danger);
+            let num_pass = next() as usize;
+            let mut pass = Vec::with_capacity(num_pass);
+            for _ in 0..num_pass {
+                pass.push(next());
+            }
+            guard_pass.push(pass);
             metas.push((accepts_at, fallbacks_at, edge_offsets_at, edges_at));
         }
 
@@ -258,6 +321,9 @@ impl StaticDFATables {
             data,
             metas,
             masks,
+            guarded_alts,
+            guard_danger,
+            guard_pass,
             decision_to_table,
             dispatch_data,
             dispatch_at,
@@ -306,6 +372,9 @@ impl StaticDFATables {
             accepts: &self.data[accepts_at..fallbacks_at],
             masks: &self.masks[t as usize],
             fallbacks: &self.data[fallbacks_at..edge_offsets_at],
+            guarded_alts: self.guarded_alts[t as usize].as_deref(),
+            guard_danger: &self.guard_danger[t as usize],
+            guard_pass: &self.guard_pass[t as usize],
             edge_min: &self.edge_min[t as usize],
             edge_row_at: &self.edge_row_at[t as usize],
             edge_targets: &self.edge_targets[t as usize],
@@ -317,6 +386,14 @@ impl StaticDFATables {
 /// defers the whole prediction to the adaptive engine (the table never
 /// consumes input, so the rescan is trivially sound).
 pub const ESCAPE: i32 = -1;
+
+/// `accepts` sentinel: a guarded-take state of an optional-postfix
+/// decision (`X Y?`): the walker evaluates the decision's stack guard
+/// (the epsilon-pop chase from the decision's block end over the real
+/// parse stack) and resolves to the state's guarded alt when it passes,
+/// deferring to the adaptive engine when an invoking state on the stack
+/// trips the guard's danger set.
+pub const GUARDED: i32 = -3;
 
 impl<'a> StaticDFATable<'a> {
     /// Predicted alternative if `state` is an accept state.
@@ -335,6 +412,32 @@ impl<'a> StaticDFATable<'a> {
     #[inline]
     pub fn is_escape(&self, state: usize) -> bool {
         self.accepts[state] == ESCAPE
+    }
+
+    /// Guarded-take resolution of `state`: `Some(alt)` when it is a
+    /// guarded-take state (see [`GUARDED`]). The walker still has to
+    /// evaluate the stack guard (see
+    /// [`crate::parser::BaseParser::dfa_walk`]).
+    #[inline]
+    pub fn guarded_alt(&self, state: usize) -> Option<i32> {
+        match self.guarded_alts {
+            Some(alts) if alts[state] > 0 => Some(alts[state]),
+            _ => None,
+        }
+    }
+
+    /// Guard walk step: `Some(true)` = the invoking state trips the
+    /// guard (defer to the adaptive engine); `Some(false)` = the chase
+    /// ends here (resolve to take); `None` = keep walking the stack.
+    #[inline]
+    pub fn guard_step(&self, invoking_state: i32) -> Option<bool> {
+        if self.guard_danger.binary_search(&invoking_state).is_ok() {
+            Some(true)
+        } else if self.guard_pass.binary_search(&invoking_state).is_err() {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     /// Alternative mask of `state` when it mask-accepts (the live

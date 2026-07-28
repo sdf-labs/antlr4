@@ -18,6 +18,7 @@ declare -a GRAMMARS=(
     "FuzzExpr"
     "BetweenExpr"
     "ParenExpr"
+    "GuardExpr"
 #    "FHIRPath"
 )
 
@@ -29,6 +30,7 @@ declare -a ADDITIONAL_ARGS=(
     ""
     ""
     ""
+    "-Xstatic-dfa"
     "-Xstatic-dfa"
     "-Xstatic-dfa"
     "-Xstatic-dfa"
@@ -68,3 +70,9 @@ echo "Generating: BetweenExpr (adaptive twin)"
 echo "Generating: ParenExpr (adaptive twin)"
 (cd "$SCRIPT_DIR/grammars" && java -cp "$ANTLR_PATH" org.antlr.v4.Tool -Dlanguage=Rust \
     -o ../tests/gen/adaptive ParenExpr.g4)
+
+# Same differential twin for the guarded-take grammar
+# (tests/guard_differential_tests.rs).
+echo "Generating: GuardExpr (adaptive twin)"
+(cd "$SCRIPT_DIR/grammars" && java -cp "$ANTLR_PATH" org.antlr.v4.Tool -Dlanguage=Rust \
+    -o ../tests/gen/adaptive GuardExpr.g4)
