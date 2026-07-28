@@ -35,6 +35,27 @@ public class StaticDFA {
 	 */
 	public static final int ESCAPE = -1;
 
+	/**
+	 * Sentinel in {@link #accepts}: a guarded-take state of an
+	 * optional-postfix decision ({@code X Y?}). The walker evaluates the
+	 * decision's guard - the epsilon-pop chase from the decision's block
+	 * end over the real parse stack - and resolves to
+	 * {@link #guardedAlts}{@code [s]} when no invoking state on the stack
+	 * is in {@link #guardDanger}, deferring to {@code adaptivePredict}
+	 * otherwise (see DecisionClassifier#finalizeGuardedTakes).
+	 */
+	public static final int GUARDED = -3;
+
+	/** True if any state of this table is a guarded-take state: a runtime
+	 *  prediction driven by it may defer to {@code adaptivePredict} when
+	 *  the parse stack trips the guard. */
+	public boolean hasGuards() {
+		for (int a : accepts) {
+			if (a == GUARDED) return true;
+		}
+		return false;
+	}
+
 	/** True if any state of this table is an escape state: a runtime
 	 *  prediction driven by it can defer to {@code adaptivePredict}. */
 	public boolean hasEscapes() {
@@ -85,9 +106,27 @@ public class StaticDFA {
 	public final boolean cyclic;
 	/** Max lookahead depth if acyclic; -1 if cyclic. */
 	public final int maxK;
+	/**
+	 * Resolution alternative per {@link #GUARDED} state; 0 = not guarded.
+	 */
+	public final int[] guardedAlts;
+	/**
+	 * Sorted invoking-state numbers whose follow state's epsilon-reachable
+	 * region contains a guard root of this decision; null/empty when the
+	 * table has no guarded states. The runtime guard defers when the parse
+	 * stack carries one of these invoking states.
+	 */
+	public final int[] guardDanger;
+	/**
+	 * Sorted invoking-state numbers whose follow state can reach their own
+	 * rule's stop over epsilon; the runtime guard keeps walking the stack
+	 * past them (and stops at the first invoking state not in this set).
+	 */
+	public final int[] guardPass;
 
 	public StaticDFA(int decision, int numStates, int[] accepts, long[] acceptMasks,
-					 int[] fallbacks, int[] edgeOffsets, int[] edges, boolean cyclic, int maxK) {
+					 int[] fallbacks, int[] edgeOffsets, int[] edges, boolean cyclic, int maxK,
+					 int[] guardedAlts, int[] guardDanger, int[] guardPass) {
 		this.decision = decision;
 		this.numStates = numStates;
 		this.accepts = accepts;
@@ -97,5 +136,8 @@ public class StaticDFA {
 		this.edges = edges;
 		this.cyclic = cyclic;
 		this.maxK = maxK;
+		this.guardedAlts = guardedAlts;
+		this.guardDanger = guardDanger;
+		this.guardPass = guardPass;
 	}
 }

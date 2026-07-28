@@ -192,6 +192,7 @@ public class DecisionClassifier {
 		/** Dry-run: conflict states where the optional-postfix take rule
 		 *  fires (mirror + vetoes pass): would accept take (alt 1). */
 		public int takeRuleFires;
+		public int guardedTakes;
 		/** Conflict states resolved to min(U) by the uniform-widening
 		 *  trust (every context entry has an assured min attestation). */
 		public int utrustResolutions;
@@ -274,6 +275,26 @@ public class DecisionClassifier {
 	 * exactly the foreign ones.
 	 */
 	protected static final int FOREIGN_CONSUME_TAINT = 8;
+
+	/**
+	 * Taint for <em>rooted</em> configurations of the optional-postfix
+	 * guard analysis: a skip-lineage (alt 2) configuration that consumed a
+	 * token outside the decision's dangling-else discipline - at an ATN
+	 * state outside the decision rule whose context's deepest frame is not
+	 * a return into the decision's block end (see the optional-postfix
+	 * take rule). The consumption position (or the invocation site of the
+	 * non-mirror deepest frame) is recorded as a <em>guard root</em>: a
+	 * runtime stack can realize such a configuration only when its
+	 * epsilon-pop chase from the block end reaches a root position, which
+	 * is exactly what the guarded-take escape evaluates (see
+	 * {@link #finalizeGuardedTakes}). Assigned above every other taint bit
+	 * so configuration merging (which takes the numeric max) never loses
+	 * it; the bit is consulted only by the postfix guard analysis, and
+	 * conflicts involving rooted skip configurations are treated as hard
+	 * for exact-ambiguity trust (a merge may have hidden a hard bit
+	 * beneath it).
+	 */
+	protected static final int ROOTED_TAINT = 16;
 
 	/** Taint for configurations whose calling context was widened. */
 	protected static final int WIDENED_TAINT = 4;
@@ -575,6 +596,14 @@ public class DecisionClassifier {
 	/** Optional-postfix shape of the decision under construction; null
 	 *  when the decision is not an optional-postfix (X Y?) shape. */
 	protected OptionalPostfixAnalyzer.Shape currentPostfixShape;
+	/** Rule index of the decision under construction (postfix guard
+	 *  analysis: consumption inside this rule is within the dangling-else
+	 *  discipline and never marks {@link #ROOTED_TAINT}). */
+	protected int currentDecisionRule = -1;
+	/** Lazily built: a rule call's follow state -> the call-site state
+	 *  owning the {@link RuleTransition} (the invoking state a real parse
+	 *  stack carries for that call). */
+	protected Map<Integer, Integer> siteByFollowState;
 
 	public DecisionClassifier(Grammar g) {
 		this.g = g;
@@ -963,6 +992,24 @@ public class DecisionClassifier {
 		return res;
 	}
 
+	/** Lazily built {@link #siteByFollowState}. */
+	protected Map<Integer, Integer> siteByFollowState() {
+		if (siteByFollowState == null) {
+			siteByFollowState = new HashMap<Integer, Integer>();
+			for (ATNState st : atn.states) {
+				if (st == null) continue;
+				for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+					Transition t = st.transition(i);
+					if (t instanceof RuleTransition) {
+						siteByFollowState.put(((RuleTransition)t).followState.stateNumber,
+							st.stateNumber);
+					}
+				}
+			}
+		}
+		return siteByFollowState;
+	}
+
 	/** Lazily built {@link #callByFollowState}. */
 	protected Map<Integer, RuleTransition> callByFollowState() {
 		if (callByFollowState == null) {
@@ -1124,7 +1171,7 @@ public class DecisionClassifier {
 		for (ATNConfig c : raw) {
 			long key = ((long)c.state.stateNumber << 32) | c.alt;
 			Integer prev = taintByStateAlt.get(key);
-			int taint = c.reachesIntoOuterContext & (BOUNDARY_TAINT|PRECPRED_TAINT|WIDENED_TAINT);
+			int taint = c.reachesIntoOuterContext & (BOUNDARY_TAINT|PRECPRED_TAINT|WIDENED_TAINT|ROOTED_TAINT);
 			taintByStateAlt.put(key, prev == null ? taint : (prev|taint));
 		}
 
@@ -1175,6 +1222,9 @@ public class DecisionClassifier {
 		List<Long> acceptMasks = new ArrayList<Long>(); // 0 = not a mask-accept state
 		List<Integer> fallbackAlts = new ArrayList<Integer>(); // 0 = none
 		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
+		List<Set<Integer>> ownRoots = new ArrayList<Set<Integer>>(); // postfix guard roots entering each state
+		List<Integer> guardCandidates = new ArrayList<Integer>(); // take-vetoed conflict states
+		this.currentDecisionRule = s.ruleIndex;
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
 		Set<Object> startBusy = new HashSet<Object>(1024);
@@ -1205,6 +1255,7 @@ public class DecisionClassifier {
 		acceptMasks.add(0L);
 		fallbackAlts.add(0);
 		stateDepth.add(0);
+		ownRoots.add(null);
 
 		Deque<Integer> work = new ArrayDeque<Integer>();
 		work.add(0);
@@ -1242,6 +1293,13 @@ public class DecisionClassifier {
 				boolean allBoundary = true;
 				for (ATNConfig c : cs) {
 					if ((c.reachesIntoOuterContext & WIDENED_TAINT) != 0) widenedTainted = true;
+					// a rooted skip configuration may have absorbed a hard
+					// taint bit in a max-merge (ROOTED_TAINT outranks them
+					// all): never trust a conflict it participates in
+					if (c.alt == 2 && currentPostfixShape != null
+						&& (c.reachesIntoOuterContext & ROOTED_TAINT) != 0) {
+						widenedTainted = true;
+					}
 					if ((c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0) anyBoundary = true;
 					else allBoundary = false;
 				}
@@ -1403,9 +1461,27 @@ public class DecisionClassifier {
 						}
 						continue;
 					}
-					else if ("postfix".equals(System.getProperty("antlr.dfa.debug"))) {
-						System.err.printf("TAKE-VETO d=%d state=%d exact=%s foreign=%s mirror=%s realTake=%s%n",
-							s.decision, d, exact, skipForeign, mirrorOk, realTake);
+					if ("postfix".equals(System.getProperty("antlr.dfa.debug"))) {
+						System.err.printf("TAKE-VETO d=%d state=%d exact=%s foreign=%s mirror=%s realTake=%s blockEnd=%d rule=%s%n",
+							s.decision, d, exact, skipForeign, mirrorOk, realTake,
+							currentPostfixShape.blockEndState, g.getRule(s.ruleIndex).name);
+						for (ATNConfig c : cs) {
+							if (c.alt == 2 && c.state.ruleIndex != s.ruleIndex
+								&& !bottomFrameIs(c.context,
+									currentPostfixShape.blockEndState,
+									java.util.Collections.newSetFromMap(
+										new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+								System.err.printf("    NOMIRROR skip %s:%d taint=%d ctx=%s%n",
+									g.getRule(c.state.ruleIndex).name, c.state.stateNumber,
+									c.reachesIntoOuterContext, decodeContext(c.context));
+							}
+						}
+					}
+					if (hybridMode && !skipForeign && realTake) {
+						// vetoed only by the mirror check: a candidate for
+						// the guarded-take escape (resolved after
+						// construction, once guard roots have propagated)
+						guardCandidates.add(d);
 					}
 				}
 
@@ -1602,7 +1678,13 @@ public class DecisionClassifier {
 					acceptMasks.add(0L);
 					fallbackAlts.add(0);
 					stateDepth.add(stateDepth.get(d)+1);
+					ownRoots.add(ls.roots);
 					work.add(id);
+				}
+				else if (ls.roots != null) {
+					Set<Integer> acc = ownRoots.get(id);
+					if (acc == null) ownRoots.set(id, new HashSet<Integer>(ls.roots));
+					else acc.addAll(ls.roots);
 				}
 				edges.get(d).add(id);
 				edgeLabels.get(d).add(ls.label);
@@ -1633,6 +1715,17 @@ public class DecisionClassifier {
 		boolean cyclic = isCyclic(edges);
 		if (!cyclic) res.k = longestPath(edges);
 
+		// Take-vetoed conflict states get a second chance: the
+		// guarded-take escape (see finalizeGuardedTakes).
+		List<Integer> guardAlts = new ArrayList<Integer>(
+			java.util.Collections.nCopies(states.size(), 0));
+		GuardData guard = null;
+		if (hybridMode && currentPostfixShape != null && !guardCandidates.isEmpty()
+			&& !overflow && !res.sawPredicate) {
+			guard = finalizeGuardedTakes(s, states, edges, acceptAlts, acceptMasks,
+				ownRoots, guardCandidates, guardAlts, res);
+		}
+
 		if ("states".equals(System.getProperty("antlr.dfa.debug"))
 			&& String.valueOf(currentDecisionNumber).equals(System.getProperty("antlr.dfa.debug.decision"))) {
 			dumpStates(s, states, edges, edgeLabels, acceptAlts, stateDepth);
@@ -1649,7 +1742,9 @@ public class DecisionClassifier {
 			res.escapes = escapes;
 			res.coverage = startCoverage(edges, edgeLabels, acceptAlts, acceptMasks);
 			if (acceptAlts.get(0) != StaticDFA.ESCAPE && res.coverage >= hybridMinCoverage) {
-				res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, acceptMasks, fallbackAlts, cyclic, res.k);
+				res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, acceptMasks,
+					fallbackAlts, cyclic, res.k, guardAlts,
+					guard != null ? guard.danger : null, guard != null ? guard.pass : null);
 			}
 			return false;
 		}
@@ -1663,9 +1758,247 @@ public class DecisionClassifier {
 
 		if (res.category == Category.LLK || res.category == Category.LLSTAR
 			|| res.category == Category.EXACT_AMBIG) {
-			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, acceptMasks, fallbackAlts, cyclic, res.k);
+			res.dfa = toStaticDFA(s.decision, edgeLabels, edges, acceptAlts, acceptMasks,
+				fallbackAlts, cyclic, res.k, null, null, null);
 		}
 		return false;
+	}
+
+	/** Danger/pass state sets of a decision's guarded-take escapes (see
+	 *  {@link #finalizeGuardedTakes}); null when the decision has none. */
+	protected static final class GuardData {
+		/** Sorted invoking states whose follow state's epsilon-reachable
+		 *  region contains a guard root: the runtime guard defers when the
+		 *  parse stack carries one. */
+		final int[] danger;
+		/** Sorted invoking states whose follow state can reach their rule's
+		 *  stop state over epsilon: the runtime guard keeps walking the
+		 *  stack past them. */
+		final int[] pass;
+		GuardData(int[] danger, int[] pass) { this.danger = danger; this.pass = pass; }
+	}
+
+	/**
+	 * Second chance for take-vetoed conflicts of an optional-postfix
+	 * decision ({@code X Y?}): the veto means some skip (alt 2)
+	 * configuration left the dangling-else discipline - it consumed tokens
+	 * at positions not funneled through the decision's own take path (the
+	 * mirror check). Such a configuration is realizable on a runtime parse
+	 * stack only when the stack's epsilon-pop chase from the decision's
+	 * block end reaches the <em>guard root</em> its first out-of-discipline
+	 * consumption passed through (recorded as {@link #ROOTED_TAINT} plus
+	 * per-state root sets during construction): the chase is how the
+	 * full-context simulator's closure actually reaches that position,
+	 * and the runtime never consults the grammar-wide FOLLOW union the
+	 * tool-side SLL closure uses. A vetoed conflict state whose skip
+	 * configurations are all in-discipline, mirror-bottomed, or rooted
+	 * therefore resolves to take, guarded by a runtime stack test:
+	 * defer to {@code adaptivePredict} iff the chase can reach a root.
+	 * On every stack where the guard passes, no out-of-discipline skip
+	 * configuration exists at runtime, the mirror argument covers the
+	 * rest, and take is the adaptive engine's answer (or the input is
+	 * invalid, the accepted error-path divergence class).
+	 *
+	 * <p>Bails (all conservative): a widening-born skip configuration
+	 * (analysis artifact, murky realizability), a clean out-of-discipline
+	 * skip configuration (no root recorded - the guard could not catch
+	 * it), a root reachable from the block end without popping any frame
+	 * (the guard would fire on every stack - useless), or a decision rule
+	 * whose block end cannot reach the rule stop over epsilon (the chase
+	 * can never pop out, the guard can never fire - resolves to plain
+	 * take accepts instead).</p>
+	 *
+	 * @return the guard's danger/pass sets, or null when no candidate
+	 *         state resolved as a guarded take
+	 */
+	protected GuardData finalizeGuardedTakes(DecisionState s,
+											 List<Set<ATNConfig>> states,
+											 List<List<Integer>> edges,
+											 List<Integer> acceptAlts,
+											 List<Long> acceptMasks,
+											 List<Set<Integer>> ownRoots,
+											 List<Integer> guardCandidates,
+											 List<Integer> guardAlts,
+											 Result res) {
+		int n = states.size();
+		// propagate guard roots through the edge graph to a fixpoint:
+		// through[s] = own[s] ∪ ∪_{p→s} through[p]
+		List<Set<Integer>> through = new ArrayList<Set<Integer>>(n);
+		Deque<Integer> rq = new ArrayDeque<Integer>();
+		for (int i = 0; i < n; i++) {
+			Set<Integer> own = ownRoots.get(i);
+			through.add(own != null ? new HashSet<Integer>(own) : null);
+			if (own != null) rq.add(i);
+		}
+		while (!rq.isEmpty()) {
+			int p = rq.remove();
+			Set<Integer> rp = through.get(p);
+			for (int t : edges.get(p)) {
+				Set<Integer> rt = through.get(t);
+				if (rt == null) {
+					through.set(t, new HashSet<Integer>(rp));
+					rq.add(t);
+				}
+				else if (rt.addAll(rp)) {
+					rq.add(t);
+				}
+			}
+		}
+
+		Set<Integer> G = new HashSet<Integer>();
+		List<Integer> guarded = new ArrayList<Integer>();
+		for (int d : guardCandidates) {
+			if (acceptAlts.get(d) != StaticDFA.ESCAPE || acceptMasks.get(d) != 0) continue;
+			Set<Integer> roots = through.get(d);
+			if (roots == null || roots.isEmpty()) continue;
+			boolean eligible = true;
+			for (ATNConfig c : states.get(d)) {
+				if (c.alt != 2) continue;
+				int taint = c.reachesIntoOuterContext;
+				if ((taint & WIDENED_TAINT) != 0) { eligible = false; break; }
+				if (c.state.ruleIndex == s.ruleIndex) continue;
+				if ((taint & ROOTED_TAINT) != 0) continue;
+				if (bottomFrameIs(c.context, currentPostfixShape.blockEndState,
+					java.util.Collections.newSetFromMap(
+						new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+					continue;
+				}
+				eligible = false;
+				break;
+			}
+			if (!eligible) continue;
+			acceptAlts.set(d, StaticDFA.GUARDED);
+			guardAlts.set(d, 1);
+			guarded.add(d);
+			G.addAll(roots);
+			res.guardedTakes++;
+			if ("guard".equals(System.getProperty("antlr.dfa.debug"))
+				|| "postfix".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("GUARD-TAKE d=%d state=%d roots=%s%n",
+					s.decision, d, new TreeSet<Integer>(roots));
+			}
+		}
+		if (guarded.isEmpty()) return null;
+
+		Set<Integer> reach0 = reachEps(currentPostfixShape.blockEndState);
+		reach0.retainAll(G);
+		if (!reach0.isEmpty()) {
+			// a root is epsilon-reachable from the block end without popping
+			// any frame: the guard would defer on every stack - useless
+			for (int d : guarded) {
+				acceptAlts.set(d, StaticDFA.ESCAPE);
+				guardAlts.set(d, 0);
+				res.guardedTakes--;
+			}
+			return null;
+		}
+		RuleStopState stop = atn.ruleToStopState[s.ruleIndex];
+		if (stop == null || !reachEps(currentPostfixShape.blockEndState)
+				.contains(stop.stateNumber)) {
+			// the chase can never leave the decision rule: no root is
+			// reachable on any stack - plain take accepts
+			for (int d : guarded) {
+				acceptAlts.set(d, 1);
+				guardAlts.set(d, 0);
+				res.guardedTakes--;
+				res.takeRuleFires++;
+			}
+			return null;
+		}
+
+		// danger[s]: an invoking state whose follow's epsilon-reachable
+		// region contains a guard root; pass[s]: the follow can reach its
+		// own rule's stop (the chase may keep popping). Exotic states with
+		// several rule transitions: danger = any follow, pass = all follows
+		// (conservative in both directions).
+		List<Integer> danger = new ArrayList<Integer>();
+		List<Integer> pass = new ArrayList<Integer>();
+		for (ATNState st : atn.states) {
+			if (st == null) continue;
+			boolean anyDanger = false;
+			boolean allPass = true;
+			boolean hasCall = false;
+			RuleStopState rs = atn.ruleToStopState[st.ruleIndex];
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (!(t instanceof RuleTransition)) continue;
+				hasCall = true;
+				Set<Integer> r = reachEps(((RuleTransition)t).followState.stateNumber);
+				Set<Integer> hit = new HashSet<Integer>(r);
+				hit.retainAll(G);
+				if (!hit.isEmpty()) anyDanger = true;
+				if (rs == null || !r.contains(rs.stateNumber)) allPass = false;
+			}
+			if (!hasCall) continue;
+			if (anyDanger) danger.add(st.stateNumber);
+			if (allPass) pass.add(st.stateNumber);
+		}
+		return new GuardData(danger.stream().mapToInt(Integer::intValue).sorted().toArray(),
+			pass.stream().mapToInt(Integer::intValue).sorted().toArray());
+	}
+
+	/**
+	 * ATN states epsilon-reachable from {@code start} (inclusive),
+	 * following epsilon transitions - rule invocations descend into the
+	 * callee - but never crossing a rule stop state (the grammar-wide
+	 * FOLLOW links attached to stop states are the tool-side SLL closure's
+	 * business, not the runtime chase's; see {@link #finalizeGuardedTakes}).
+	 */
+	protected Set<Integer> reachEps(int start) {
+		Set<Integer> out = new HashSet<Integer>();
+		Deque<Integer> wl = new ArrayDeque<Integer>();
+		wl.add(start);
+		while (!wl.isEmpty()) {
+			int sn = wl.remove();
+			if (!out.add(sn)) continue;
+			ATNState st = atn.states.get(sn);
+			if (st instanceof RuleStopState) continue;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t.isEpsilon()) wl.add(t.target.stateNumber);
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * Guard roots of one out-of-discipline skip consumption: the
+	 * consumption's own ATN position for context branches that bottom out
+	 * at the empty context (the epsilon-pop chase must reach the position
+	 * itself), and the call-site state of every non-mirror deepest context
+	 * frame (the chase must reach the site to push that frame). Mirror
+	 * branches (deepest frame = the decision's block end) contribute
+	 * nothing - they are realizable through the decision's own take path.
+	 */
+	protected void collectGuardRoots(ATNConfig c, Set<Integer> out) {
+		collectGuardRoots(c, c.context, out,
+			java.util.Collections.newSetFromMap(
+				new java.util.IdentityHashMap<PredictionContext, Boolean>()));
+	}
+
+	private void collectGuardRoots(ATNConfig c, PredictionContext ctx, Set<Integer> out,
+								   Set<PredictionContext> visited) {
+		if (ctx == null || ctx.isEmpty()) {
+			out.add(c.state.stateNumber);
+			return;
+		}
+		if (!visited.add(ctx)) return;
+		for (int i = 0; i < ctx.size(); i++) {
+			PredictionContext p = ctx.getParent(i);
+			if (p == null || p.isEmpty()) {
+				int rs = ctx.getReturnState(i);
+				if (rs == PredictionContext.EMPTY_RETURN_STATE) {
+					out.add(c.state.stateNumber);
+				}
+				else if (rs != currentPostfixShape.blockEndState) {
+					Integer site = siteByFollowState().get(rs);
+					out.add(site != null ? site : rs);
+				}
+			}
+			else {
+				collectGuardRoots(c, p, out, visited);
+			}
+		}
 	}
 
 	/**
@@ -1691,7 +2024,8 @@ public class DecisionClassifier {
 		boolean[] reachesAccept = new boolean[n];
 		Deque<Integer> work = new ArrayDeque<Integer>();
 		for (int i = 0; i < n; i++) {
-			if (acceptAlts.get(i) > 0 || acceptMasks.get(i) != 0) {
+			if (acceptAlts.get(i) > 0 || acceptAlts.get(i) == StaticDFA.GUARDED
+				|| acceptMasks.get(i) != 0) {
 				reachesAccept[i] = true;
 				work.add(i);
 			}
@@ -1769,17 +2103,21 @@ public class DecisionClassifier {
 										   List<Integer> acceptAlts,
 										   List<Long> acceptMasks,
 										   List<Integer> fallbackAlts,
-										   boolean cyclic, int maxK) {
+										   boolean cyclic, int maxK,
+										   List<Integer> guardAlts,
+										   int[] guardDanger, int[] guardPass) {
 		int n = edgeTargets.size();
 		int[] accepts = new int[n];
 		long[] masks = new long[n];
 		int[] fallbacks = new int[n];
+		int[] guarded = new int[n];
 		int[] offsets = new int[n+1];
 		List<int[]> triples = new ArrayList<int[]>();
 		for (int s = 0; s < n; s++) {
 			accepts[s] = acceptAlts.get(s);
 			masks[s] = acceptMasks.get(s);
 			fallbacks[s] = fallbackAlts.get(s);
+			if (guardAlts != null) guarded[s] = guardAlts.get(s);
 			offsets[s] = triples.size()*3;
 			List<int[]> stateTriples = new ArrayList<int[]>();
 			for (int e = 0; e < edgeTargets.get(s).size(); e++) {
@@ -1799,16 +2137,21 @@ public class DecisionClassifier {
 			edges[i*3+1] = triples.get(i)[1];
 			edges[i*3+2] = triples.get(i)[2];
 		}
-		return new StaticDFA(decision, n, accepts, masks, fallbacks, offsets, edges, cyclic, maxK);
+		return new StaticDFA(decision, n, accepts, masks, fallbacks, offsets, edges,
+			cyclic, maxK, guarded, guardDanger, guardPass);
 	}
 
 	/** A DFA edge under construction: token class label -> successor config set. */
 	protected static final class LabeledSuccessor {
 		final IntervalSet label;
 		final Set<ATNConfig> configs;
-		LabeledSuccessor(IntervalSet label, Set<ATNConfig> configs) {
+		/** Guard roots passed through by skip-lineage consumption on this
+		 *  edge (optional-postfix guard analysis); null/empty when none. */
+		final Set<Integer> roots;
+		LabeledSuccessor(IntervalSet label, Set<ATNConfig> configs, Set<Integer> roots) {
 			this.label = label;
 			this.configs = configs;
+			this.roots = roots;
 		}
 	}
 
@@ -1911,9 +2254,24 @@ public class DecisionClassifier {
 
 		// close each class; merge classes that reach the same successor set
 		Map<ConfigSetKey, IntervalSet> bySuccessor = new LinkedHashMap<ConfigSetKey, IntervalSet>();
+		Map<ConfigSetKey, Set<Integer>> rootsBySuccessor = new LinkedHashMap<ConfigSetKey, Set<Integer>>();
 		for (Map.Entry<BitSet, IntervalSet> e : classLabels.entrySet()) {
 			BitSet key = e.getKey();
+			if ("move".equals(System.getProperty("antlr.dfa.debug"))
+				&& String.valueOf(currentDecisionNumber).equals(System.getProperty("antlr.dfa.debug.decision"))) {
+				StringBuilder sb = new StringBuilder();
+				sb.append("MOVE d=").append(currentDecisionNumber)
+					.append(" label=").append(e.getValue().toString(g.getVocabulary())).append('\n');
+				for (int m = key.nextSetBit(0); m >= 0; m = key.nextSetBit(m+1)) {
+					ATNConfig c = moveConfigs.get(m);
+					sb.append(String.format("    alt=%d %s:%d taint=%d stop=%s ctx=%s%n",
+						c.alt, g.getRule(c.state.ruleIndex).name, c.state.stateNumber,
+						c.reachesIntoOuterContext, moveIsStop.get(m), decodeContext(c.context)));
+				}
+				System.err.print(sb);
+			}
 			Set<ATNConfig> succ = new LinkedHashSet<ATNConfig>();
+			Set<Integer> succRoots = null;
 			Set<Object> busy = new HashSet<Object>(1024);
 			for (int m = key.nextSetBit(0); m >= 0; m = key.nextSetBit(m+1)) {
 				ATNConfig c = moveConfigs.get(m);
@@ -1944,6 +2302,24 @@ public class DecisionClassifier {
 							}
 						}
 					}
+					if (currentPostfixShape != null && c.alt == 2
+						&& (c.reachesIntoOuterContext & ROOTED_TAINT) == 0
+						&& c.state.ruleIndex != currentDecisionRule
+						&& !bottomFrameIs(c.context,
+							currentPostfixShape.blockEndState,
+							java.util.Collections.newSetFromMap(
+								new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+						// skip-lineage consumption outside the dangling-else
+						// discipline (a position outside the decision rule whose
+						// context does not bottom out at the block end): the
+						// advanced configuration is realizable only on runtime
+						// stacks whose epsilon-pop chase from the block end
+						// reaches the root position(s) this consumption passed
+						// through - record them for the guarded-take escape.
+						advanced.reachesIntoOuterContext |= ROOTED_TAINT;
+						if (succRoots == null) succRoots = new HashSet<Integer>();
+						collectGuardRoots(c, succRoots);
+					}
 					closure(advanced, succ, busy, res, 0);
 				}
 			}
@@ -1952,15 +2328,22 @@ public class DecisionClassifier {
 			IntervalSet merged = bySuccessor.get(succKey);
 			if (merged == null) {
 				bySuccessor.put(succKey, e.getValue());
+				if (succRoots != null) rootsBySuccessor.put(succKey, succRoots);
 			}
 			else {
 				merged.addAll(e.getValue());
+				if (succRoots != null) {
+					Set<Integer> acc = rootsBySuccessor.get(succKey);
+					if (acc == null) rootsBySuccessor.put(succKey, succRoots);
+					else acc.addAll(succRoots);
+				}
 			}
 		}
 
-		List<LabeledSuccessor> result = new ArrayList<LabeledSuccessor>(bySuccessor.size());
+		List<LabeledSuccessor> result = new ArrayList<LabeledSuccessor>();
 		for (Map.Entry<ConfigSetKey, IntervalSet> e : bySuccessor.entrySet()) {
-			result.add(new LabeledSuccessor(e.getValue(), e.getKey().set));
+			result.add(new LabeledSuccessor(e.getValue(), e.getKey().set,
+				rootsBySuccessor.get(e.getKey())));
 		}
 		return result;
 	}
@@ -2797,14 +3180,15 @@ public class DecisionClassifier {
 				"factorable: %d decisions (%d groups); mask-accepts=%d states; escapes curable=%d%n",
 				factorDecisions, factorGroups, factorMaskStates, factorCured));
 		}
-		int postfixDecisions = 0, takeFires = 0;
+		int postfixDecisions = 0, takeFires = 0, guardedTakes = 0;
 		for (Result r : results) {
 			if (r.hasPostfixShape) postfixDecisions++;
 			takeFires += r.takeRuleFires;
+			guardedTakes += r.guardedTakes;
 		}
 		if (postfixDecisions > 0) {
-			buf.append(String.format("take-rule: %d optional-postfix decisions; fires at %d conflict states%n",
-				postfixDecisions, takeFires));
+			buf.append(String.format("take-rule: %d optional-postfix decisions; fires at %d conflict states; guarded takes=%d%n",
+				postfixDecisions, takeFires, guardedTakes));
 		}
 		int utrust = 0;
 		for (Result r : results) utrust += r.utrustResolutions;
@@ -2873,7 +3257,8 @@ public class DecisionClassifier {
 				   .append(']');
 			}
 			if (r.hasPostfixShape) {
-				buf.append(" [postfix: takeFires=").append(r.takeRuleFires).append(']');
+				buf.append(" [postfix: takeFires=").append(r.takeRuleFires)
+					.append(" guarded=").append(r.guardedTakes).append(']');
 			}
 			buf.append('\n');
 		}

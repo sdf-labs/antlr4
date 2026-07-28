@@ -60,12 +60,18 @@ import java.util.Base64;
  */
 public class StaticDFATables {
 	/** Must match the tool's SerializedStaticDFAs.FORMAT_VERSION. */
-	public static final int FORMAT_VERSION = 6;
+	public static final int FORMAT_VERSION = 7;
 
 	/** Concatenated per-table data: accepts, fallbacks, edgeOffsets, edges. */
 	protected final int[] data;
 	/** Per-table (acceptsAt, fallbacksAt, edgeOffsetsAt, edgesAt, endAt) indexes into {@link #data}. */
 	protected final int[] metas;
+	/** Per-table guarded-take resolution alt per state (0 = not guarded). */
+	protected final int[][] guardedAlts;
+	/** Per-table sorted invoking states tripping the decision's stack guard. */
+	protected final int[][] guardDanger;
+	/** Per-table sorted invoking states the guard walk may pop past. */
+	protected final int[][] guardPass;
 	/**
 	 * decision number -> table index ({@code >= 0}), -1 (no table), or
 	 * {@code -(dispatch offset) - 2}: an offset into {@link #dispatchData},
@@ -76,11 +82,15 @@ public class StaticDFATables {
 	/** Flattened precedence dispatch entries. */
 	protected final int[] dispatchData;
 
-	protected StaticDFATables(int[] data, int[] metas, int[] decisionToTable, int[] dispatchData) {
+	protected StaticDFATables(int[] data, int[] metas, int[] decisionToTable, int[] dispatchData,
+							  int[][] guardedAlts, int[][] guardDanger, int[][] guardPass) {
 		this.data = data;
 		this.metas = metas;
 		this.decisionToTable = decisionToTable;
 		this.dispatchData = dispatchData;
+		this.guardedAlts = guardedAlts;
+		this.guardDanger = guardDanger;
+		this.guardPass = guardPass;
 	}
 
 	/**
@@ -107,6 +117,9 @@ public class StaticDFATables {
 		int[] decisionToTable = new int[numSlots];
 		java.util.Arrays.fill(decisionToTable, -1);
 		int[] metas = new int[numTables*5];
+		int[][] guardedAlts = new int[numTables][];
+		int[][] guardDanger = new int[numTables][];
+		int[][] guardPass = new int[numTables][];
 
 		// first pass over structure requires data sizes; buffer grows as we read
 		IntBuffer data = new IntBuffer();
@@ -137,6 +150,29 @@ public class StaticDFATables {
 				for (int a = 0; a < numAlts; a++) ints.next();
 				data.set(metas[table*5]+state, MASK_DEFER);
 			}
+			// v7: guarded-take section (optional-postfix guards)
+			int numGuardedStates = ints.next();
+			if (numGuardedStates > 0) {
+				int[] alts = new int[numStates];
+				for (int i = 0; i < numGuardedStates; i++) {
+					int state = ints.next();
+					alts[state] = ints.next();
+					data.set(metas[table*5]+state, GUARDED);
+				}
+				guardedAlts[table] = alts;
+			}
+			int numDanger = ints.next();
+			if (numDanger > 0) {
+				int[] danger = new int[numDanger];
+				for (int i = 0; i < numDanger; i++) danger[i] = ints.next();
+				guardDanger[table] = danger;
+			}
+			int numPass = ints.next();
+			if (numPass > 0) {
+				int[] pass = new int[numPass];
+				for (int i = 0; i < numPass; i++) pass[i] = ints.next();
+				guardPass[table] = pass;
+			}
 			metas[table*5+4] = data.size;                     // endAt
 		}
 		int numDispatches = ints.next();
@@ -151,7 +187,8 @@ public class StaticDFATables {
 		if (!ints.atEnd()) {
 			throw new IllegalStateException("trailing bytes in static DFA blob");
 		}
-		return new StaticDFATables(data.toArray(), metas, decisionToTable, dispatchData.toArray());
+		return new StaticDFATables(data.toArray(), metas, decisionToTable, dispatchData.toArray(),
+			guardedAlts, guardDanger, guardPass);
 	}
 
 	/** {@code accepts} sentinel: a hybrid table's escape state - the walker
@@ -162,6 +199,14 @@ public class StaticDFATables {
 	 *  codegen, so the walker defers to {@code adaptivePredict}; the Rust
 	 *  runtime resolves the mask through its factored alternative path. */
 	public static final int MASK_DEFER = -2;
+
+	/** {@code accepts} sentinel: a guarded-take state of an
+	 *  optional-postfix decision: the walker evaluates the decision's
+	 *  stack guard ({@link #guardDefers}) and resolves to
+	 *  {@link #guardedAlt} when it passes, deferring to
+	 *  {@code adaptivePredict} when the stack trips a danger invoking
+	 *  state. */
+	public static final int GUARDED = -3;
 
 	/**
 	 * Is {@code decision} precedence-dispatched (per-precedence-class
@@ -229,6 +274,36 @@ public class StaticDFATables {
 			else return data[at+2];
 		}
 		return -1;
+	}
+
+	/** Resolution alternative of a {@link #GUARDED} state. */
+	public int guardedAlt(int table, int state) {
+		return guardedAlts[table][state];
+	}
+
+	/**
+	 * The stack guard of a guarded-take state: walk the parse stack's
+	 * invoking states - the epsilon-pop chase from the decision's block
+	 * end - and answer whether the prediction must defer to
+	 * {@code adaptivePredict}: an invoking state whose follow region
+	 * contains a guard root ({@code danger}) trips it; an invoking state
+	 * whose follow cannot reach its own rule's stop ends the chase (the
+	 * configurations it could still realize are confined to the mirror
+	 * discipline); anything else keeps walking.
+	 */
+	public boolean guardDefers(int table, org.antlr.v4.runtime.RuleContext ctx) {
+		int[] danger = guardDanger[table];
+		int[] pass = guardPass[table];
+		for (org.antlr.v4.runtime.RuleContext c = ctx;
+			 c instanceof org.antlr.v4.runtime.ParserRuleContext;
+			 c = c.parent)
+		{
+			int inv = ((org.antlr.v4.runtime.ParserRuleContext)c).invokingState;
+			if (inv < 0) break;
+			if (java.util.Arrays.binarySearch(danger, inv) >= 0) return true;
+			if (java.util.Arrays.binarySearch(pass, inv) < 0) break;
+		}
+		return false;
 	}
 
 	private static final class IntReader {
