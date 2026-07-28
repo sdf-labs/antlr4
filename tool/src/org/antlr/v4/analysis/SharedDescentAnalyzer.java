@@ -9,6 +9,8 @@ package org.antlr.v4.analysis;
 import org.antlr.v4.runtime.atn.ATN;
 import org.antlr.v4.runtime.atn.ATNConfig;
 import org.antlr.v4.runtime.atn.ATNState;
+import org.antlr.v4.runtime.atn.BlockEndState;
+import org.antlr.v4.runtime.atn.BlockStartState;
 import org.antlr.v4.runtime.atn.DecisionState;
 import org.antlr.v4.runtime.atn.PredictionContext;
 import org.antlr.v4.runtime.atn.RuleStopState;
@@ -96,6 +98,12 @@ public class SharedDescentAnalyzer {
 		 *  prefix-side boundary of the first-consumer proof (frames
 		 *  below the R segment are validated only down to these). */
 		public final Set<Integer> boundaryStates = new HashSet<Integer>();
+		/** The recorded wrapper call chains of each member alternative
+		 *  (outermost call first, the R call last): the dispatch's tail
+		 *  analysis pops along these chains - not grammar-wide - so
+		 *  phantom returns (R's own follow positions, other members'
+		 *  call sites) cannot pollute a member's continuation set. */
+		public final Map<Integer, List<List<RuleTransition>>> chainsByAlt = new HashMap<Integer, List<List<RuleTransition>>>();
 	}
 
 	/** Per-decision plan: the shared-descent groups of the decision. */
@@ -117,14 +125,12 @@ public class SharedDescentAnalyzer {
 
 	private final Grammar g;
 	private final ATN atn;
-	private final Map<Integer, RuleTransition> callByFollowState;
 	private final Map<Integer, List<Integer>> candidateCache = new HashMap<Integer, List<Integer>>();
 	private final Map<String, Set<Integer>> callSitesCache = new HashMap<String, Set<Integer>>();
 
-	public SharedDescentAnalyzer(Grammar g, ATN atn, Map<Integer, RuleTransition> callByFollowState) {
+	public SharedDescentAnalyzer(Grammar g, ATN atn) {
 		this.g = g;
 		this.atn = atn;
-		this.callByFollowState = callByFollowState;
 	}
 
 	/** Build the decision's shared-descent plan. */
@@ -165,6 +171,8 @@ public class SharedDescentAnalyzer {
 			for (AltPath p : paths) {
 				if (grp.callSiteState < 0) grp.callSiteState = p.callSite;
 				grp.boundaryStates.add(p.boundary);
+				grp.chainsByAlt.computeIfAbsent(p.alt, k -> new ArrayList<List<RuleTransition>>())
+					.add(p.chain);
 			}
 			analyzeDispatch(s, grp);
 			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
@@ -292,10 +300,14 @@ public class SharedDescentAnalyzer {
 	/**
 	 * The dispatch analysis of one group: every member alt's mandatory
 	 * continuation after R (its FIRST tokens, FOLLOW tokens included iff
-	 * the continuation is nullable). Explicit arms are the non-nullable
-	 * continuations; the default is the single nullable one. Over-
-	 * approximating (grammar-wide pops, full callee LOOK) can only
-	 * reject sound groups, never accept unsound ones.
+	 * the continuation is nullable), computed by popping along the
+	 * member's recorded descent chain - not grammar-wide - so phantom
+	 * returns (R's own follow positions, other members' call sites)
+	 * cannot pollute the continuation sets. Explicit arms are the
+	 * non-nullable continuations; the default is the single nullable
+	 * one. Over-approximating (full callee LOOK, grammar-wide FOLLOW at
+	 * the decision rule's stop) can only reject sound groups, never
+	 * accept unsound ones.
 	 */
 	private void analyzeDispatch(DecisionState s, Group grp) {
 		LL1Analyzer ll1 = new LL1Analyzer(atn);
@@ -303,12 +315,13 @@ public class SharedDescentAnalyzer {
 		Set<Integer> nullable = new HashSet<Integer>();
 		for (int a = grp.alts.nextSetBit(0); a >= 0; a = grp.alts.nextSetBit(a+1)) {
 			Set<Integer> nul = new HashSet<Integer>();
-			ATNState start = grp.prefixTokens.isEmpty()
-				? s.transition(a-1).target
-				: postPrefixState(s, a, grp.prefixTokens);
-			IntervalSet t = start != null
-				? mandatoryTailFrom(s, a, grp.rule, ll1, nul, start)
-				: new IntervalSet();
+			IntervalSet t = new IntervalSet();
+			List<List<RuleTransition>> chains = grp.chainsByAlt.get(a);
+			if (chains != null) {
+				for (List<RuleTransition> chain : chains) {
+					t.addAll(mandatoryTailChain(s, chain, ll1, nul));
+				}
+			}
 			mandatory.put(a, t);
 			// an empty mandatory tail is a degenerate continuation: the
 			// alternative completes with no discriminating token, so it
@@ -344,53 +357,34 @@ public class SharedDescentAnalyzer {
 	}
 
 	/**
-	 * FIRST tokens of alternative {@code alt}'s mandatory continuation
-	 * after R (over-approximated); {@code nullable} is set when the
-	 * continuation can complete the alternative with no post-R token,
-	 * in which case the decision rule's FOLLOW is included.
+	 * FIRST tokens of the mandatory continuation after R along one
+	 * recorded descent chain (over-approximated by full callee LOOK);
+	 * {@code nullable} is set when the walk reaches the decision rule's
+	 * stop, in which case the decision rule's FOLLOW is included. The
+	 * walk starts at the innermost R-call follow and pops frame by frame
+	 * along the chain (a wrapper rule's stop continues at the next
+	 * outer frame's follow, never grammar-wide).
 	 */
-	private IntervalSet mandatoryTail(DecisionState s, int alt, int ruleR, LL1Analyzer ll1,
-									  Set<Integer> nullable) {
-		return mandatoryTailFrom(s, alt, ruleR, ll1, nullable, s.transition(alt-1).target);
-	}
-
-	/** Variant of {@link #mandatoryTail} starting from the post-prefix
-	 *  state of the alternative (prefix groups: the tail lies after the
-	 *  shared prefix tokens). */
-	private IntervalSet mandatoryTailFrom(DecisionState s, int alt, int ruleR, LL1Analyzer ll1,
-										  Set<Integer> nullable, ATNState startState) {
+	private IntervalSet mandatoryTailChain(DecisionState s, List<RuleTransition> chain,
+										   LL1Analyzer ll1, Set<Integer> nullable) {
 		IntervalSet tokens = new IntervalSet();
-		Set<ATNState> calls = new HashSet<ATNState>();
 		Set<ATNState> seen = new HashSet<ATNState>();
 		Deque<ATNState> work = new ArrayDeque<ATNState>();
-		work.add(startState);
-		while (!work.isEmpty()) {
-			ATNState st = work.poll();
-			if (!seen.add(st) || st instanceof RuleStopState) continue;
-			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
-				Transition t = st.transition(i);
-				if (t instanceof RuleTransition) {
-					if (((RuleTransition)t).target.ruleIndex == ruleR) calls.add(((RuleTransition)t).followState);
-					else work.add(t.target);
-				}
-				else if (t.isEpsilon()) {
-					work.add(t.target);
-				}
-			}
-		}
-		for (ATNState follow : calls) {
-			tailFirst(follow, s.ruleIndex, tokens, nullable, ll1, new HashSet<ATNState>());
-		}
-		return tokens;
-	}
-
-	private void tailFirst(ATNState st, int decisionRule, IntervalSet tokens,
-						   Set<Integer> nullable, LL1Analyzer ll1, Set<ATNState> seen) {
-		Deque<ATNState> work = new ArrayDeque<ATNState>();
-		work.add(st);
+		work.add(chain.get(chain.size()-1).followState);
 		while (!work.isEmpty()) {
 			ATNState p = work.poll();
 			if (!seen.add(p)) continue;
+			if (p instanceof RuleStopState) {
+				int idx = chainFrameOf(chain, p.ruleIndex);
+				if (idx > 0) {
+					work.add(chain.get(idx-1).followState);
+				}
+				else if (p.ruleIndex == s.ruleIndex) {
+					nullable.add(1);
+					tokens.addAll(ll1.LOOK(p, null));
+				}
+				continue;
+			}
 			for (int i = 0; i < p.getNumberOfTransitions(); i++) {
 				Transition t = p.transition(i);
 				if (t instanceof RuleTransition) {
@@ -398,26 +392,24 @@ public class SharedDescentAnalyzer {
 					work.add(((RuleTransition)t).followState);
 				}
 				else if (t.isEpsilon()) {
-					if (p instanceof RuleStopState) {
-						if (p.ruleIndex == decisionRule) {
-							nullable.add(1);
-							tokens.addAll(ll1.LOOK(p, null));
-						}
-						else {
-							for (RuleTransition rt : callByFollowState.values()) {
-								if (rt.target.ruleIndex == p.ruleIndex) work.add(rt.followState);
-							}
-						}
-					}
-					else {
-						work.add(t.target);
-					}
+					work.add(t.target);
 				}
-				else {
+				else if (t.label() != null) {
 					tokens.addAll(t.label());
 				}
 			}
 		}
+		return tokens;
+	}
+
+	/** Index of the chain frame whose caller rule is {@code ruleIndex}
+	 *  (the frame whose follow state lies in that rule), innermost
+	 *  first; -1 when the rule is not a chain caller. */
+	private static int chainFrameOf(List<RuleTransition> chain, int ruleIndex) {
+		for (int i = chain.size()-1; i >= 0; i--) {
+			if (chain.get(i).followState.ruleIndex == ruleIndex) return i;
+		}
+		return -1;
 	}
 
 	/**
@@ -449,8 +441,162 @@ public class SharedDescentAnalyzer {
 	 *  consumed below it and needs no validation). */
 	public boolean startsViaR(ATNConfig c, DecisionState s, Group grp) {
 		Set<Integer> callSites = epsilonCallSites(s, grp);
-		return segStartsViaR(c.state.ruleIndex, c.context, grp.rule, callSites, grp.boundaryStates,
-			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()));
+		if (segStartsViaR(c.state.ruleIndex, c.context, grp.rule, callSites, grp.boundaryStates,
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+			return true;
+		}
+		// Chain-descended group, no R segment in the chain.
+		int v = checkDescent(c.state, grp.rule,
+			new HashMap<Long, Integer>(), new HashSet<Long>());
+		// Inert configuration: the position cannot reach R at all and
+		// every deviation from it was approved by the member gate's
+		// side-exit discipline - it can never interact with the descent.
+		if (v == V_NOCLEAN) return true;
+		// Post-first-R configuration: reaching the position consumed at
+		// least one token, so the body's first R call (at the decision
+		// start, served by the resume) already happened - later R calls
+		// parse normally.
+		if (!reachableWithoutConsumption(c.state)) return true;
+		// A wrapper frame whose invocation is a post-R position (the
+		// call site is reachable only through an R call) proves the
+		// config's first-R span already happened, e.g. the selectItem
+		// alias block, which follows the expression invocation.
+		if (chainFramesPostR(c.context, grp.rule,
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+			return true;
+		}
+		// The remaining cases need the wrapper chain below to lie on
+		// the epsilon descent.
+		if (!allCallSitesToBoundary(c.context, callSites, grp.boundaryStates,
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+			return false;
+		}
+		// Pre-R configuration: the position still descends to R - on
+		// the commit region it enters R at a clean call site (the
+		// member gate's side-exit discipline keeps the body's first R
+		// call aligned with the neutral span).
+		if (v != V_VETO) return true;
+		// Post-R configuration (e.g. a wrapper rule's stop): the
+		// position is reachable only through an R call, so the config's
+		// R span already happened - aligned by construction.
+		return postRPosition(c.state, grp.rule);
+	}
+
+	/** Any context frame whose call site is a post-R position (the
+	 *  site is reachable from its rule's start only through an R
+	 *  call): the frame's invocation then happened after the first R
+	 *  span, whatever the chain below. */
+	private boolean chainFramesPostR(PredictionContext ctx, int ruleR, Set<PredictionContext> visited) {
+		if (ctx == null || ctx.isEmpty()) return false;
+		if (!visited.add(ctx)) return false;
+		for (int i = 0; i < ctx.size(); i++) {
+			int rs = ctx.getReturnState(i);
+			if (rs == PredictionContext.EMPTY_RETURN_STATE) continue;
+			ATNState site = siteStateByFollow(rs);
+			if (site != null
+				&& (postRPosition(site, ruleR) || !reachableWithoutConsumption(site))) {
+				return true;
+			}
+			if (chainFramesPostR(ctx.getParent(i), ruleR, visited)) return true;
+		}
+		return false;
+	}
+
+	/** Is {@code state} reachable from its rule's start consuming zero
+	 *  tokens? The walk follows epsilon transitions, descends into
+	 *  callees, and continues past a callee only when the callee can
+	 *  complete token-free (nullable). When it is not, the position
+	 *  postdates the body's first R call at the decision start. */
+	private boolean reachableWithoutConsumption(ATNState state) {
+		Set<ATNState> seen = new HashSet<ATNState>();
+		Deque<ATNState> work = new ArrayDeque<ATNState>();
+		work.add(atn.ruleToStartState[state.ruleIndex]);
+		while (!work.isEmpty()) {
+			ATNState st = work.poll();
+			if (!seen.add(st)) continue;
+			if (st == state) return true;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof RuleTransition) {
+					RuleTransition rt = (RuleTransition)t;
+					work.add(rt.target);
+					if (nullableOf(rt.target.ruleIndex)) work.add(rt.followState);
+				}
+				else if (t.isEpsilon()) {
+					work.add(t.target);
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Rule nullability (can complete with zero tokens), cached. */
+	private final Map<Integer, Boolean> ruleNullable = new HashMap<Integer, Boolean>();
+	private boolean nullableOf(int rule) {
+		Boolean n = ruleNullable.get(rule);
+		if (n == null) {
+			n = new LL1Analyzer(atn).LOOK(atn.ruleToStartState[rule], null)
+				.contains(org.antlr.v4.runtime.Token.EPSILON);
+			ruleNullable.put(rule, n);
+		}
+		return n;
+	}
+
+	/** Lazily built: a rule call's follow state number -> the source
+	 *  state owning the {@link RuleTransition} (unique calls only; a
+	 *  follow shared by multiple call sites maps to no entry). */
+	private Map<Integer, ATNState> siteStateByFollow;
+	private ATNState siteStateByFollow(int followState) {
+		if (siteStateByFollow == null) {
+			siteStateByFollow = new HashMap<Integer, ATNState>();
+			Set<Integer> dup = new HashSet<Integer>();
+			for (ATNState st : atn.states) {
+				if (st == null) continue;
+				for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+					Transition t = st.transition(i);
+					if (t instanceof RuleTransition) {
+						int f = ((RuleTransition)t).followState.stateNumber;
+						if (siteStateByFollow.put(f, st) != null) dup.add(f);
+					}
+				}
+			}
+			siteStateByFollow.keySet().removeAll(dup);
+		}
+		return siteStateByFollow.get(followState);
+	}
+
+	/** Is {@code state} reachable from its rule's start only through an
+	 *  R invocation? The walk explores epsilon and token transitions
+	 *  (R-free consumption) and non-R calls (continuing past a callee
+	 *  only when it may complete without R - an ALWAYS_R callee called
+	 *  R to get there); R calls are barriers. */
+	private boolean postRPosition(ATNState state, int ruleR) {
+		Map<Long, Integer> memo = new HashMap<Long, Integer>();
+		Set<Long> inProgress = new HashSet<Long>();
+		Set<ATNState> seen = new HashSet<ATNState>();
+		Deque<ATNState> work = new ArrayDeque<ATNState>();
+		work.add(atn.ruleToStartState[state.ruleIndex]);
+		while (!work.isEmpty()) {
+			ATNState st = work.poll();
+			if (!seen.add(st)) continue;
+			if (st == state) return false;
+			if (st instanceof RuleStopState) continue;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof RuleTransition) {
+					RuleTransition rt = (RuleTransition)t;
+					if (rt.target.ruleIndex == ruleR) continue; // R is a barrier
+					work.add(rt.target);
+					if (checkDescent(rt.target, ruleR, memo, inProgress) != V_ALWAYS) {
+						work.add(rt.followState);
+					}
+				}
+				else {
+					work.add(t.target);
+				}
+			}
+		}
+		return true;
 	}
 
 	/** Does the sub-chain from ({@code stateRule}, {@code ctx}) down
@@ -653,14 +799,18 @@ public class SharedDescentAnalyzer {
 	 */
 	/** The path of one alternative to R: the leading token sequence
 	 *  consumed before the (epsilon) descent to R, the R-call's source
-	 *  state ({@link #callSite}), and the R-call's follow state
+	 *  state ({@link #callSite}), the R-call's follow state
 	 *  ({@link #boundary} - the prefix-side end of the first-consumer
-	 *  proof). */
+	 *  proof), and the full wrapper call chain from the decision
+	 *  alternative to the R call (outermost first, the R call last -
+	 *  the dispatch analysis pops along it after the neutral parse). */
 	private static final class AltPath {
 		final List<Integer> tokens = new ArrayList<Integer>();
+		int alt = -1;
 		int rule = -1;
 		int callSite = -1;
 		int boundary = -1;
+		final List<RuleTransition> chain = new ArrayList<RuleTransition>();
 	}
 
 	/**
@@ -676,35 +826,41 @@ public class SharedDescentAnalyzer {
 	private List<AltPath> altPaths(DecisionState s, int alt) {
 		List<AltPath> out = new ArrayList<AltPath>();
 		Deque<Object[]> work = new ArrayDeque<Object[]>();
-		work.add(new Object[]{s.transition(alt-1).target, new ArrayList<Integer>(), Boolean.FALSE});
+		work.add(new Object[]{s.transition(alt-1).target, new ArrayList<Integer>(), Boolean.FALSE,
+			new ArrayList<RuleTransition>()});
 		Set<String> seen = new HashSet<String>();
 		while (!work.isEmpty()) {
 			Object[] item = work.poll();
 			ATNState st = (ATNState)item[0];
 			@SuppressWarnings("unchecked") List<Integer> tokens = (List<Integer>)item[1];
 			boolean inRule = (Boolean)item[2];
+			@SuppressWarnings("unchecked") List<RuleTransition> chain = (List<RuleTransition>)item[3];
 			String key = st.stateNumber + "|" + tokens + (inRule ? "r" : "");
 			if (!seen.add(key) || st instanceof RuleStopState) continue;
 			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
 				Transition t = st.transition(i);
 				if (t instanceof RuleTransition) {
 					RuleTransition rt = (RuleTransition)t;
+					List<RuleTransition> nextChain = new ArrayList<RuleTransition>(chain);
+					nextChain.add(rt);
 					AltPath p = new AltPath();
+					p.alt = alt;
 					p.tokens.addAll(tokens);
 					p.rule = rt.target.ruleIndex;
 					p.callSite = st.stateNumber;
 					p.boundary = rt.followState.stateNumber;
+					p.chain.addAll(nextChain);
 					out.add(p);
-					work.add(new Object[]{t.target, tokens, Boolean.TRUE});
+					work.add(new Object[]{t.target, tokens, Boolean.TRUE, nextChain});
 				}
 				else if (t.isEpsilon()) {
-					work.add(new Object[]{t.target, tokens, inRule});
+					work.add(new Object[]{t.target, tokens, inRule, chain});
 				}
 				else if (!inRule && t.label() != null && tokens.size() < MAX_PREFIX_TOKENS) {
 					for (int tok : t.label().toList()) {
 						List<Integer> next = new ArrayList<Integer>(tokens);
 						next.add(tok);
-						work.add(new Object[]{t.target, next, Boolean.FALSE});
+						work.add(new Object[]{t.target, next, Boolean.FALSE, chain});
 					}
 				}
 			}
@@ -712,20 +868,53 @@ public class SharedDescentAnalyzer {
 		return out;
 	}
 
-	/** Is R the unique first consuming position of alternative
-	 *  {@code alt} after its prefix? The neutral parse invokes R
-	 *  immediately after the prefix, so a member alternative's body
-	 *  must not be able to consume anything - a token or a non-R call
-	 *  - before its first R call, nor to reach the end of the decision
-	 *  rule before it. Otherwise the neutral R span and the body's
-	 *  first R call can cover different tokens (e.g. {@code TRIM LPAREN
-	 *  (trimsSpecification? valueExpression? FROM) ...}, where BOTH is
-	 *  a trimsSpecification to the body but identifier content to the
-	 *  neutral R) and the resume graft would attach at the wrong
-	 *  place. */
+	/** Is R the first consuming position of alternative {@code alt}
+	 *  after its prefix on every input where a neutral R parse succeeds
+	 *  (the descent block's commit region)? The walk descends from the
+	 *  post-prefix start through epsilon transitions and wrapper-rule
+	 *  calls; an R call ends a path successfully. Every side exit - a
+	 *  token or a non-R call that would let the body consume (or
+	 *  complete) before its first R call - must be unreachable on the
+	 *  commit region:
+	 *
+	 *  <ul>
+	 *  <li>a side token disjoint from FIRST(R) is never consumed when
+	 *      the neutral R parse succeeds;</li>
+	 *  <li>a side call whose FIRST is disjoint from FIRST(R)'s
+	 *      likewise;</li>
+	 *  <li>an overlapping side token is still never taken when the
+	 *      enclosing block's R-ward alternative precedes it: both are
+	 *      viable on the commit region, so adaptivePredict's min-alt
+	 *      rule picks the R-ward one (e.g. valueExpression's
+	 *      primaryExpression base alternative beats the MINUS/PLUS
+	 *      unary alternatives, which overlap FIRST(primaryExpression)
+	 *      only on signed numerics);</li>
+	 *  <li>everything else - an overlapping side call, an R-less
+	 *      completion, an overlapping token without R-ward priority -
+	 *      mis-aligns the body's first R call from the neutral parse's
+	 *      span and vetoes the member (cf. the TRIM from-form family:
+	 *      BOTH starts both trimsSpecification and a valueExpression,
+	 *      so the neutral parse can consume as R content a token the
+	 *      body consumes before its first R call).
+	 *  </ul>
+	 *
+	 *  With {@code -Dantlr.dfa.disableChainDescent=1} the walk reverts
+	 *  to the shallow discipline (no wrapper descent: every token, non-R
+	 *  call, or rule end before R vetoes). */
 	private boolean firstConsumerUnique(DecisionState s, int alt, AltPath p) {
 		ATNState start = postPrefixState(s, alt, p.tokens);
 		if (start == null) return false;
+		if (System.getProperty("antlr.dfa.disableChainDescent") != null) {
+			return firstConsumerUniqueShallow(start, p.rule);
+		}
+		return checkDescent(start, p.rule,
+			new HashMap<Long, Integer>(), new HashSet<Long>()) == V_ALWAYS;
+	}
+
+	/** The pre-chain-descent member gate: every epsilon path from
+	 *  {@code start} must reach an R call before any token, any non-R
+	 *  call, or the rule end. */
+	private boolean firstConsumerUniqueShallow(ATNState start, int ruleR) {
 		Set<ATNState> seen = new HashSet<ATNState>();
 		Deque<ATNState> work = new ArrayDeque<ATNState>();
 		work.add(start);
@@ -737,7 +926,7 @@ public class SharedDescentAnalyzer {
 			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
 				Transition t = st.transition(i);
 				if (t instanceof RuleTransition) {
-					if (((RuleTransition)t).target.ruleIndex != p.rule) return false;
+					if (((RuleTransition)t).target.ruleIndex != ruleR) return false;
 					any = true;
 				}
 				else if (t.isEpsilon()) {
@@ -750,6 +939,185 @@ public class SharedDescentAnalyzer {
 		}
 		return any;
 	}
+
+	/** Descent verdicts of {@link #checkDescent}. */
+	private static final int V_VETO = 0;
+	private static final int V_ALWAYS = 1;
+	private static final int V_SOMETIMES = 2;
+	private static final int V_NOCLEAN = 3;
+
+	/** Verdict of the descent from {@code start} (a state inside one
+	 *  rule body, no consumption so far) to the body's first R call:
+	 *  V_ALWAYS when every path that survives the side-exit checks calls
+	 *  R before completing, V_SOMETIMES when R is called on some path
+	 *  but a survivable R-less completion also exists, V_NOCLEAN when no
+	 *  clean path to R exists but every side exit was approved (the
+	 *  position is unreachable on the commit region - exempt, not a
+	 *  veto), V_VETO when a side exit can be taken on the commit region.
+	 *  Memoized per (R, start state); genuine recursion on the clean
+	 *  descent vetoes (conservative). */
+	private int checkDescent(ATNState start, int ruleR,
+							 Map<Long, Integer> memo, Set<Long> inProgress) {
+		Long mkey = (((long)ruleR) << 32) | start.stateNumber;
+		Integer m = memo.get(mkey);
+		if (m != null) return m;
+		if (!inProgress.add(mkey)) return V_VETO;
+		IntervalSet firstR = firstOfRule(ruleR);
+		boolean foundR = false;
+		boolean rLess = false;
+		boolean veto = false;
+		Set<ATNState> seen = new HashSet<ATNState>();
+		Deque<ATNState> work = new ArrayDeque<ATNState>();
+		work.add(start);
+		while (!work.isEmpty() && !veto) {
+			ATNState st = work.poll();
+			if (!seen.add(st)) continue;
+			if (st instanceof RuleStopState) { rLess = true; continue; }
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof RuleTransition) {
+					RuleTransition rt = (RuleTransition)t;
+					int callee = rt.target.ruleIndex;
+					if (callee == ruleR) { foundR = true; continue; }
+					if (firstOfRule(callee).and(firstR).isNil()) continue; // disjoint side call
+					int v = checkDescent(rt.target, ruleR, memo, inProgress);
+					if (v == V_VETO) { veto = true; break; }
+					foundR = true;
+					if (v == V_SOMETIMES) work.add(rt.followState);
+				}
+				else if (t.isEpsilon()) {
+					work.add(t.target);
+				}
+				else if (t.label() == null) {
+					work.add(t.target); // actions: no token consumption
+				}
+				else if (t.label().and(firstR).isNil()) {
+					continue; // disjoint side token
+				}
+				else if (!tokenPriority(st, ruleR)) {
+					veto = true;
+				}
+			}
+		}
+		inProgress.remove(mkey);
+		int v = veto ? V_VETO : !foundR ? V_NOCLEAN : (rLess ? V_SOMETIMES : V_ALWAYS);
+		memo.put(mkey, v);
+		return v;
+	}
+
+	/** FIRST set of a rule (epsilon stripped), cached. */
+	private final Map<Integer, IntervalSet> ruleFirst = new HashMap<Integer, IntervalSet>();
+	private IntervalSet firstOfRule(int rule) {
+		IntervalSet f = ruleFirst.get(rule);
+		if (f == null) {
+			f = new LL1Analyzer(atn).LOOK(atn.ruleToStartState[rule], null);
+			f.remove(org.antlr.v4.runtime.Token.EPSILON);
+			ruleFirst.put(rule, f);
+		}
+		return f;
+	}
+
+	/** Min-alt priority for an overlapping side token at {@code st}:
+	 *  the innermost block enclosing the token must have an R-ward
+	 *  alternative (reaching R with zero token consumption) preceding
+	 *  the token's alternative; on the commit region both are viable
+	 *  and adaptivePredict's min-alt rule then takes the R-ward one,
+	 *  keeping the body's first R call aligned with the neutral span. */
+	private boolean tokenPriority(ATNState st, int ruleR) {
+		Long ba = enclosingAlt(st);
+		if (ba == null) return false;
+		int blk = (int)(ba >> 32);
+		int altIdx = (int)(ba & 0xffffffffL);
+		ATNState bs = atn.states.get(blk);
+		if (!(bs instanceof BlockStartState)) return false;
+		int clean = cleanAltOfBlock((BlockStartState)bs, ruleR);
+		return clean != 0 && clean < altIdx;
+	}
+
+	/** Minimum alternative index of block {@code b} through which R is
+	 *  reachable with zero token consumption, or 0 when none. */
+	private int cleanAltOfBlock(BlockStartState b, int ruleR) {
+		for (int i = 0; i < b.getNumberOfTransitions(); i++) {
+			if (reachesRuleEpsilon(b.transition(i).target, ruleR, new HashSet<ATNState>())) {
+				return i + 1;
+			}
+		}
+		return 0;
+	}
+
+	/** Can R be reached from {@code start} following epsilon
+	 *  transitions and rule calls (descending into callees and
+	 *  continuing past their returns) with zero token consumption? */
+	private boolean reachesRuleEpsilon(ATNState start, int ruleR, Set<ATNState> seen) {
+		Deque<ATNState> work = new ArrayDeque<ATNState>();
+		work.add(start);
+		while (!work.isEmpty()) {
+			ATNState st = work.poll();
+			if (!seen.add(st) || st instanceof RuleStopState) continue;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof RuleTransition) {
+					RuleTransition rt = (RuleTransition)t;
+					if (rt.target.ruleIndex == ruleR) return true;
+					work.add(rt.target);
+					work.add(rt.followState);
+				}
+				else if (t.isEpsilon()) {
+					work.add(t.target);
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Innermost enclosing (BlockStartState state number, alternative
+	 *  index) pair per ATN state, packed into a long; states outside
+	 *  any block have no entry. */
+	private final Map<Integer, Map<ATNState, Long>> blockAltCache = new HashMap<Integer, Map<ATNState, Long>>();
+	private Long enclosingAlt(ATNState st) {
+		Map<ATNState, Long> m = blockAltCache.get(st.ruleIndex);
+		if (m == null) {
+			m = computeEnclosingAlts(st.ruleIndex);
+			blockAltCache.put(st.ruleIndex, m);
+		}
+		return m.get(st);
+	}
+
+	/** One stack-carrying DFS over a rule's own states, recording the
+	 *  innermost (block, alt) of every state. */
+	private Map<ATNState, Long> computeEnclosingAlts(int rule) {
+		Map<ATNState, Long> m = new HashMap<ATNState, Long>();
+		Deque<Object[]> work = new ArrayDeque<Object[]>();
+		work.add(new Object[]{atn.ruleToStartState[rule], new ArrayList<Long>()});
+		Set<ATNState> seen = new HashSet<ATNState>();
+		while (!work.isEmpty()) {
+			Object[] it = work.poll();
+			ATNState st = (ATNState)it[0];
+			@SuppressWarnings("unchecked") List<Long> stack = (List<Long>)it[1];
+			if (!seen.add(st)) continue;
+			if (!stack.isEmpty()) m.put(st, stack.get(stack.size()-1));
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof RuleTransition || !t.isEpsilon()) continue; // intra-rule only
+				List<Long> next = stack;
+				if (st instanceof BlockStartState) {
+					next = new ArrayList<Long>(stack);
+					next.add(((long)st.stateNumber << 32) | (i + 1));
+				}
+				else if (st instanceof BlockEndState) {
+					if (!stack.isEmpty()) {
+						next = new ArrayList<Long>(stack);
+						next.remove(next.size()-1);
+					}
+				}
+				work.add(new Object[]{t.target, next});
+			}
+		}
+		return m;
+	}
+
+	/** Can R be reached from {@code start} following epsilon
+	 *  transitions and rule calls only (zero tokens)? */
 
 	/** Can R be reached from {@code start} following epsilon
 	 *  transitions and rule calls only (zero tokens)? */

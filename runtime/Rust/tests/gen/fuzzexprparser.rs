@@ -508,6 +508,7 @@ where
 			        }
 			    },
 			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    x if (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
 			    m => m,
 			  } } {
 			x if x == 0x1 =>{

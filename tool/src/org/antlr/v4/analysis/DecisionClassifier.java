@@ -581,7 +581,7 @@ public class DecisionClassifier {
 	}
 	protected SharedDescentAnalyzer descentAnalyzer() {
 		if (descentAnalyzer == null) {
-			descentAnalyzer = new SharedDescentAnalyzer(g, atn, callByFollowState());
+			descentAnalyzer = new SharedDescentAnalyzer(g, atn);
 		}
 		return descentAnalyzer;
 	}
@@ -1551,7 +1551,7 @@ public class DecisionClassifier {
 							SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
 								&& System.getProperty("antlr.dfa.disableDescentMasks") == null
 								? currentDescentPlan.groupCovering(alts) : null;
-							if (descentGroup != null) {
+							if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
 								res.descentMaskStates++;
 								res.approxConflicts.remove(conflicting);
 								res.contextSensitiveConflicts.remove(conflicting);
@@ -1632,7 +1632,7 @@ public class DecisionClassifier {
 					SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
 						&& System.getProperty("antlr.dfa.disableDescentMasks") == null
 						? currentDescentPlan.groupCovering(alts) : null;
-					if (descentGroup != null) {
+					if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
 						res.descentMaskStates++;
 						acceptMasks.set(d, altBits(alts));
 						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {

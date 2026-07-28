@@ -848,6 +848,7 @@ descentMaskPredict(choice, groups) ::= <<
   match _m {
     0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? - 1) as u32),
 <groups; separator="\n">
+    x if (x & (x-1)) != 0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? - 1) as u32),
     m => m,
   } }
 >>
@@ -1362,7 +1363,14 @@ impl\<'input: 'arena, 'arena, Tok: Token + 'input> <struct.escapedName>Ext\<'inp
             let tmp = unsafe { std::ptr::read(base_ctx) };
             <currentRule.name; format="cap">ContextAll::<struct.escapedName>(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        *dbt_antlr4::cast_unchecked!(src => mut <currentRule.name; format="cap">ContextAll\<'input, 'arena, Tok\>) = ctx;
+        // replace + forget, NOT assignment: the new value's children Vec
+        // was moved out of the old one, so dropping the old value would
+        // deallocate the buffer the new value references (the arena can
+        // then hand it to another node's Vec - shared-descent resume
+        // paths hit this: the decision ctx's Vec buffer is the most
+        // recent arena allocation when copy_from runs).
+        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut <currentRule.name; format="cap">ContextAll\<'input, 'arena, Tok\>), ctx);
+        std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = \<Self as CustomRuleContext\<'input, 'arena, Tok>\>::node_tag();
 	}
