@@ -3472,6 +3472,7 @@ public class DecisionClassifier {
 						r.decisionState.decision, r.category));
 					buf.append(' ').append(r.precNote)
 					   .append(r.precDfa != null ? " [static]" : " [adaptive]")
+					   .append(" states=").append(r.numDfaStates)
 					   .append(" fb=").append(fbString(r)).append('\n');
 				}
 				continue;
