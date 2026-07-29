@@ -557,6 +557,37 @@ where
         self.dfa_walk(decision)
     }
 
+    /// The real-stack postfix chase of the guarded descent dispatch (see
+    /// [`crate::follow_sets`]): can `token` follow the decision rule on
+    /// the current parse stack? Walking the context frames upward, the
+    /// token follows iff it starts the caller-body continuation of some
+    /// frame and every frame below completes token-free. A shared-descent
+    /// group's tail dispatch commits to an explicit member on the dispatch
+    /// token only when this returns false (the group's nullable member,
+    /// e.g. a bare column reference, is then dead on this stack).
+    pub fn follow_contains(&self, token: i32) -> bool {
+        let sets = self.atn_manager.atn().follow_sets();
+        let mut c = self.ctx();
+        while let Some(node) = c {
+            let inv = node.get_invoking_state();
+            if inv < 0 {
+                break;
+            }
+            if std::env::var_os("DBG_FOLLOW").is_some() {
+                eprintln!("FOLLOW token={} inv={} contains={} nullable={}",
+                    token, inv, sets.contains(inv as usize, token), sets.nullable(inv as usize));
+            }
+            if sets.contains(inv as usize, token) {
+                return true;
+            }
+            if !sets.nullable(inv as usize) {
+                return false;
+            }
+            c = node.get_parent();
+        }
+        token == crate::token::TOKEN_EOF
+    }
+
     /// Set the stage for a neutral prefix parse:
     /// - Mark the input stream so it can be rewound later
     /// - Skip over prefix tokens (note: do NOT parse them through
@@ -586,6 +617,11 @@ where
         let pos0 = self.input.index();
         let mark = self.input.mark();
         let ctx = self.ctx();
+        // the DFA walk buffered only the lookahead it consumed; the
+        // neutral parse resumes prefix_len tokens ahead, which can sit
+        // one past the buffered range - fetch it before seeking (the
+        // stream's seek panics on an unbuffered index)
+        self.input.la(prefix_len + 1);
         self.input.seek(pos0 + prefix_len);
         self.muted += 1;
 

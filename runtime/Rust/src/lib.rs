@@ -91,6 +91,7 @@ pub mod atn;
 pub mod atn_config_set;
 #[doc(hidden)]
 pub mod atn_deserializer;
+pub mod follow_sets;
 pub mod common_token_stream;
 pub mod error_listener;
 pub mod error_strategy;

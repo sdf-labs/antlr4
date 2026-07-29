@@ -24,11 +24,16 @@ public class DescentGroup extends OutputModelObject {
 	public static class Tail extends OutputModelObject {
 		public final String armKey;
 		public final String altBit;
+		/** Guarded arm: commits only when the real parse stack's postfix
+		 *  chase cannot consume the dispatch token (the group's nullable
+		 *  member is then dead on this stack). */
+		public final boolean guarded;
 
-		public Tail(OutputModelFactory factory, String armKey, int alt) {
+		public Tail(OutputModelFactory factory, String armKey, int alt, boolean guarded) {
 			super(factory);
 			this.armKey = armKey;
 			this.altBit = "0x" + Long.toHexString(1L << (alt-1));
+			this.guarded = guarded;
 		}
 	}
 
@@ -51,6 +56,16 @@ public class DescentGroup extends OutputModelObject {
 	/** The default member's singleton bit (hex literal), or null for an
 	 *  all-explicit dispatch (the fallback widens via adaptivePredict). */
 	public final String defaultBit;
+	/** Head-guard check of a group with conditional members (see
+	 *  SharedDescentAnalyzer.Group#headGuard): rendered as a boolean
+	 *  expression that is false when the lookahead enters a member's
+	 *  pre-R side exit (the neutral span would misalign); null when the
+	 *  group has no conditional members. */
+	public String headGuard;
+	/** FIRST(R) pre-check (see SharedDescentAnalyzer.Group#firstTokens):
+	 *  the neutral parse is attempted only when the post-prefix
+	 *  lookahead can start R. */
+	public String firstCheck;
 
 	public DescentGroup(OutputModelFactory factory, int decision, long cover, String ruleName, String defaultBit,
 						int callSiteState) {

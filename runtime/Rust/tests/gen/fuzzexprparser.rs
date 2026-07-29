@@ -463,7 +463,7 @@ where
 			match { let _m = recog.base.dfa_predict_mask(2)?;
 			  match _m {
 			    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
-			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() => {
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [FuzzExpr_T__2 | FuzzExpr_T__6 | FuzzExpr_T__11 | FuzzExpr_ID | FuzzExpr_INT].contains(&recog.input.la(1)) => {
 			        recog.base.set_state(25);
 			        let _neutral_state = recog.base.begin_neutral_parse(0);
 			        match recog.e() {
@@ -488,13 +488,148 @@ where
 			                    // resume mode; anything else rewinds and defers to the
 			                    // adaptive engine from the decision start - no resume,
 			                    // the chosen body re-parses everything
-			                    let _tailbit = match recog.input.la(1) {
-			                        FuzzExpr_T__2 => Some(0x1),
+			                    let _tailbit = { let _t = recog.input.la(1); match _t {
+			                        FuzzExpr_T__2 if !false || !recog.base.follow_contains(_t) => Some(0x1),
 			                        _ => Some(0x2),
-			                    };
+			                    } };
 			                    match _tailbit {
 			                        Some(bit) => {
 			                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e);
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            bit
+			                        }
+			                        None => {
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                        }
+			                    }
+			                }
+			            },
+			        }
+			    },
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [FuzzExpr_T__2 | FuzzExpr_T__11 | FuzzExpr_ID | FuzzExpr_INT].contains(&recog.input.la(1)) => {
+			        recog.base.set_state(45);
+			        let _neutral_state = recog.base.begin_neutral_parse(0);
+			        match recog.atom() {
+			            Err(e) if !e.is_recoverable() => {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    return Err(e)
+			                },
+			            Err(_) => {
+			                recog.base.end_neutral_parse(&_neutral_state);
+			                1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			            },
+			            Ok(_node) => {
+			                if recog.base.syntax_error_count() != _neutral_state.2 {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    // errorful neutral parse: throw its result away and
+			                    // defer (muted, so no spurious reports escaped)
+			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                }
+			                else {
+			                    // the tail token decides on the post-prefix stream.
+			                    // An explicit arm (or the static default) rewinds into
+			                    // resume mode; anything else rewinds and defers to the
+			                    // adaptive engine from the decision start - no resume,
+			                    // the chosen body re-parses everything
+			                    let _tailbit = { let _t = recog.input.la(1); match _t {
+			                        FuzzExpr_T__2 if !true || !recog.base.follow_contains(_t) => Some(0x1),
+			                        _ => None,
+			                    } };
+			                    match _tailbit {
+			                        Some(bit) => {
+			                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_atom);
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            bit
+			                        }
+			                        None => {
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                        }
+			                    }
+			                }
+			            },
+			        }
+			    },
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [FuzzExpr_T__2 | FuzzExpr_ID].contains(&recog.input.la(1)) => {
+			        recog.base.set_state(67);
+			        let _neutral_state = recog.base.begin_neutral_parse(0);
+			        match recog.q() {
+			            Err(e) if !e.is_recoverable() => {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    return Err(e)
+			                },
+			            Err(_) => {
+			                recog.base.end_neutral_parse(&_neutral_state);
+			                1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			            },
+			            Ok(_node) => {
+			                if recog.base.syntax_error_count() != _neutral_state.2 {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    // errorful neutral parse: throw its result away and
+			                    // defer (muted, so no spurious reports escaped)
+			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                }
+			                else {
+			                    // the tail token decides on the post-prefix stream.
+			                    // An explicit arm (or the static default) rewinds into
+			                    // resume mode; anything else rewinds and defers to the
+			                    // adaptive engine from the decision start - no resume,
+			                    // the chosen body re-parses everything
+			                    let _tailbit = { let _t = recog.input.la(1); match _t {
+			                        FuzzExpr_T__2 if !true || !recog.base.follow_contains(_t) => Some(0x1),
+			                        _ => None,
+			                    } };
+			                    match _tailbit {
+			                        Some(bit) => {
+			                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_q);
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            bit
+			                        }
+			                        None => {
+			                            recog.base.end_neutral_parse(&_neutral_state);
+			                            1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                        }
+			                    }
+			                }
+			            },
+			        }
+			    },
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+			    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [FuzzExpr_T__2 | FuzzExpr_ID].contains(&recog.input.la(1)) => {
+			        recog.base.set_state(34);
+			        let _neutral_state = recog.base.begin_neutral_parse(0);
+			        match recog.name() {
+			            Err(e) if !e.is_recoverable() => {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    return Err(e)
+			                },
+			            Err(_) => {
+			                recog.base.end_neutral_parse(&_neutral_state);
+			                1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			            },
+			            Ok(_node) => {
+			                if recog.base.syntax_error_count() != _neutral_state.2 {
+			                    recog.base.end_neutral_parse(&_neutral_state);
+			                    // errorful neutral parse: throw its result away and
+			                    // defer (muted, so no spurious reports escaped)
+			                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
+			                }
+			                else {
+			                    // the tail token decides on the post-prefix stream.
+			                    // An explicit arm (or the static default) rewinds into
+			                    // resume mode; anything else rewinds and defers to the
+			                    // adaptive engine from the decision start - no resume,
+			                    // the chosen body re-parses everything
+			                    let _tailbit = { let _t = recog.input.la(1); match _t {
+			                        FuzzExpr_T__2 if !true || !recog.base.follow_contains(_t) => Some(0x1),
+			                        _ => None,
+			                    } };
+			                    match _tailbit {
+			                        Some(bit) => {
+			                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_name);
 			                            recog.base.end_neutral_parse(&_neutral_state);
 			                            bit
 			                        }
@@ -629,6 +764,9 @@ where
     Input: TokenStream<'input, 'arena, TF> + 'arena,
 {
 	pub fn name(&mut self,) -> Result<&'arena NameContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
+		if let Some(_node) = self.base.resume_take(RULE_name)? {
+		    return Ok(_node.as_rule_context().unwrap());
+		}
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
         let _parentctx = recog.base.take_ctx();
@@ -743,6 +881,9 @@ where
     Input: TokenStream<'input, 'arena, TF> + 'arena,
 {
 	pub fn q(&mut self,) -> Result<&'arena QContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
+		if let Some(_node) = self.base.resume_take(RULE_q)? {
+		    return Ok(_node.as_rule_context().unwrap());
+		}
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
         let _parentctx = recog.base.take_ctx();
@@ -1136,6 +1277,9 @@ where
     Input: TokenStream<'input, 'arena, TF> + 'arena,
 {
 	pub fn atom(&mut self,) -> Result<&'arena AtomContextAll<'input, 'arena, TF::Tok>, ANTLRError> {
+		if let Some(_node) = self.base.resume_take(RULE_atom)? {
+		    return Ok(_node.as_rule_context().unwrap());
+		}
         dbt_antlr4::maybe_grow_stack!({
 		let recog = self;
         let _parentctx = recog.base.take_ctx();

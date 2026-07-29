@@ -1253,7 +1253,7 @@ where
 			match { let _m = recog.base.dfa_predict_mask(1)?;
 			  match _m {
 			    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
-			    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() => {
+			    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [ParenExpr_T__0 | ParenExpr_T__3 | ParenExpr_ID | ParenExpr_INT].contains(&recog.input.la(2)) => {
 			        recog.base.set_state(13);
 			        let _neutral_state = recog.base.begin_neutral_parse(1);
 			        match recog.e() {
@@ -1278,11 +1278,11 @@ where
 			                    // resume mode; anything else rewinds and defers to the
 			                    // adaptive engine from the decision start - no resume,
 			                    // the chosen body re-parses everything
-			                    let _tailbit = match recog.input.la(1) {
-			                        ParenExpr_T__1 => Some(0x4),
-			                        ParenExpr_T__2 => Some(0x8),
+			                    let _tailbit = { let _t = recog.input.la(1); match _t {
+			                        ParenExpr_T__1 if !false || !recog.base.follow_contains(_t) => Some(0x4),
+			                        ParenExpr_T__2 if !false || !recog.base.follow_contains(_t) => Some(0x8),
 			                        _ => None,
-			                    };
+			                    } };
 			                    match _tailbit {
 			                        Some(bit) => {
 			                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e);

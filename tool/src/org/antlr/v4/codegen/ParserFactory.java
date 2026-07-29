@@ -334,6 +334,17 @@ public class ParserFactory extends DefaultOutputModelFactory {
 					gen.getTarget().escapeIfNeeded(g.getRule(grp.rule).name), defaultBit,
 					grp.callSiteState);
 			group.prefixLen = grp.prefixTokens.size();
+			if (!grp.headGuard.isNil()) {
+				// the guard inspects the first token after the shared prefix:
+				// a conditional member's pre-R side exits live there, not at
+				// the decision start
+				group.headGuard = "![" + tailArmKey(grp.headGuard) + "].contains(&recog.input.la("
+					+ (grp.prefixTokens.size()+1) + "))";
+			}
+			if (!grp.firstTokens.isNil()) {
+				group.firstCheck = "[" + tailArmKey(grp.firstTokens) + "].contains(&recog.input.la("
+					+ (grp.prefixTokens.size()+1) + "))";
+			}
 			for (int t : grp.prefixTokens) {
 				group.prefixTokens.add(
 					g.name + '_' + gen.getTarget().escapeIfNeeded(
@@ -342,7 +353,8 @@ public class ParserFactory extends DefaultOutputModelFactory {
 			for (java.util.Map.Entry<Integer, org.antlr.v4.runtime.misc.IntervalSet> e
 					: grp.explicitArms.entrySet()) {
 				group.tails.add(new org.antlr.v4.codegen.model.DescentGroup.Tail(
-					this, tailArmKey(e.getValue()), e.getKey()));
+					this, tailArmKey(e.getValue()), e.getKey(),
+					grp.guardedDispatch && !grp.nullableMembers.isEmpty()));
 			}
 			block.groups.add(group);
 			any = true;

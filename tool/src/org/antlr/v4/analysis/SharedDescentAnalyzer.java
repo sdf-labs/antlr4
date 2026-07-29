@@ -71,6 +71,42 @@ public class SharedDescentAnalyzer {
 		 *  pairwise-disjoint explicit arms (each disjoint from the
 		 *  default's viable set). */
 		public boolean codegenable;
+		/** Per-member mandatory tail FIRST sets (the post-R continuation
+		 *  along the recorded chains), retained when the plan-time dispatch
+		 *  proof fails so the post-construction pass can finalize arms
+		 *  against the table's observed boundary continuations (see
+		 *  {@link #armsDeferred}). */
+		public final Map<Integer, IntervalSet> mandatoryTail = new HashMap<Integer, IntervalSet>();
+		/** Members whose continuation after R can complete (they may
+		 *  complete right after R - the boundary members); retained for
+		 *  the deferred-arms pass. */
+		public final BitSet nullableMembers = new BitSet();
+	/** Per-member in-decision tail FIRST sets (the continuation after R
+	 *  along the recorded chains, WITHOUT the decision-rule FOLLOW
+	 *  union): the guarded dispatch subtracts these among members; the
+	 *  FOLLOW part is the runtime guard's business. */
+	public final Map<Integer, IntervalSet> tailFirst = new HashMap<Integer, IntervalSet>();
+		/** The dispatch arms are guarded (see {@link #armsDeferred}-class
+		 *  groups): an explicit arm commits only when the real parse stack's
+		 *  postfix chase cannot consume the dispatch token, so a live
+		 *  nullable member on the real stack defers to adaptivePredict. */
+		public boolean guardedDispatch;
+		/** Head-guard tokens of the group's conditional members: a member
+		 *  whose body can consume before its first R call only through a
+		 *  side exit starting with one of these tokens (e.g. a function
+		 *  call's optional processing mode before the function name). On
+		 *  lookahead NOT in this set every member's first R call is the
+		 *  first consumed token, so the neutral R span is aligned; on
+		 *  lookahead in this set the block defers to adaptivePredict. */
+		public final IntervalSet headGuard = new IntervalSet();
+		/** FIRST set of the shared rule: the neutral parse is attempted
+		 *  only when the post-prefix lookahead can start R at all (a doomed
+		 *  attempt costs an errorful muted parse before the defer). */
+		public final IntervalSet firstTokens = new IntervalSet();
+	/** The plan-time dispatch proof failed (an explicit arm collided
+	 *  with a nullable member's grammar-wide FOLLOW, or several
+	 *  members are nullable): arms are computed guarded instead. */
+	public boolean armsDeferred;
 
 		public Group(int rule, BitSet alts) {
 			this.rule = rule;
@@ -121,6 +157,21 @@ public class SharedDescentAnalyzer {
 			}
 			return null;
 		}
+
+		/** Every group whose block alternatives cover {@code live}: the
+		 *  mask acceptance must try each in turn - a group whose
+		 *  first-consumer proof fails on the state's configurations must
+		 *  not shadow a later group that covers the same alternatives and
+		 *  would pass. */
+		public List<Group> groupsCovering(BitSet live) {
+			List<Group> out = new ArrayList<Group>();
+			for (Group grp : groups) {
+				BitSet covered = (BitSet)(grp.blockAlts.isEmpty() ? grp.alts.clone() : grp.blockAlts.clone());
+				covered.and(live);
+				if (covered.equals(live)) out.add(grp);
+			}
+			return out;
+		}
 	}
 
 	private final Grammar g;
@@ -157,22 +208,47 @@ public class SharedDescentAnalyzer {
 					}
 					continue;
 				}
+				if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+					System.err.printf("CAND-OK d=%d alt=%d rule=%s prefix=%s head=%s%n", s.decision, a,
+						g.getRule(p.rule).name, p.tokens, p.headTokens);
+				}
 				String key = p.rule + "|" + p.tokens;
 				byKey.computeIfAbsent(key, k -> new BitSet()).set(a);
 				pathsByKey.computeIfAbsent(key, k -> new ArrayList<AltPath>()).add(p);
 			}
 		}
 		for (Map.Entry<String, BitSet> e : byKey.entrySet()) {
+			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("CLUSTER d=%d key=%s alts=%s%n", s.decision, e.getKey(), e.getValue());
+			}
 			if (e.getValue().cardinality() < 2) continue;
 			List<AltPath> paths = pathsByKey.get(e.getKey());
 			AltPath first = paths.get(0);
 			Group grp = new Group(first.rule, e.getValue());
 			grp.prefixTokens.addAll(first.tokens);
+			grp.firstTokens.addAll(firstOfRule(grp.rule));
+			// per member alternative: a clean chain (no side exits before
+			// the first R call) proves unconditional membership and erases
+			// the alternative's conditional chains (their distinct frames
+			// fail the mask-time per-config proof); only when every chain
+			// is conditional does the alternative join the head guard
+			Map<Integer, List<AltPath>> pathsByAlt = new LinkedHashMap<Integer, List<AltPath>>();
 			for (AltPath p : paths) {
-				if (grp.callSiteState < 0) grp.callSiteState = p.callSite;
-				grp.boundaryStates.add(p.boundary);
-				grp.chainsByAlt.computeIfAbsent(p.alt, k -> new ArrayList<List<RuleTransition>>())
-					.add(p.chain);
+				pathsByAlt.computeIfAbsent(p.alt, k -> new ArrayList<AltPath>()).add(p);
+			}
+			for (List<AltPath> perAlt : pathsByAlt.values()) {
+				List<AltPath> use = new ArrayList<AltPath>();
+				for (AltPath p : perAlt) {
+					if (p.headTokens.isNil()) use.add(p);
+				}
+				if (use.isEmpty()) use = perAlt;
+				for (AltPath p : use) {
+					if (grp.callSiteState < 0) grp.callSiteState = p.callSite;
+					grp.boundaryStates.add(p.boundary);
+					grp.headGuard.addAll(p.headTokens);
+					grp.chainsByAlt.computeIfAbsent(p.alt, k -> new ArrayList<List<RuleTransition>>())
+						.add(p.chain);
+				}
 			}
 			analyzeDispatch(s, grp);
 			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
@@ -196,6 +272,11 @@ public class SharedDescentAnalyzer {
 					s.decision, g.getRule(grp.rule).name, grp.prefixTokens, grp.alts, grp.defaultAlt, grp.explicitArms);
 			}
 		}
+		// Order groups with unconditional (head-guard-free) members first:
+		// a conditional group defers on its guard tokens and is the weaker
+		// dispatch, so the mask acceptance and the generated arms (which
+		// must agree on the firing order) try unconditional groups first.
+		plan.groups.sort((x, y) -> Boolean.compare(!x.headGuard.isNil(), !y.headGuard.isNil()));
 		return plan;
 	}
 
@@ -316,19 +397,23 @@ public class SharedDescentAnalyzer {
 		for (int a = grp.alts.nextSetBit(0); a >= 0; a = grp.alts.nextSetBit(a+1)) {
 			Set<Integer> nul = new HashSet<Integer>();
 			IntervalSet t = new IntervalSet();
+			IntervalSet tailOnly = new IntervalSet();
 			List<List<RuleTransition>> chains = grp.chainsByAlt.get(a);
 			if (chains != null) {
 				for (List<RuleTransition> chain : chains) {
-					t.addAll(mandatoryTailChain(s, chain, ll1, nul));
+					t.addAll(mandatoryTailChain(s, chain, ll1, nul, tailOnly));
 				}
 			}
 			mandatory.put(a, t);
+			grp.tailFirst.put(a, tailOnly);
 			// an empty mandatory tail is a degenerate continuation: the
 			// alternative completes with no discriminating token, so it
 			// belongs to the default arm, not an explicit one
 			if (!nul.isEmpty() || t.isNil()) nullable.add(a);
 		}
-		if (nullable.size() > 1) return;
+		grp.mandatoryTail.putAll(mandatory);
+		for (int a : nullable) grp.nullableMembers.set(a);
+		if (nullable.size() > 1) { deferArms(s, grp); return; }
 		IntervalSet defaultSet = nullable.isEmpty()
 			? new IntervalSet() : mandatory.get(nullable.iterator().next());
 		IntervalSet acc = new IntervalSet();
@@ -336,11 +421,11 @@ public class SharedDescentAnalyzer {
 			if (nullable.contains(a)) continue;
 			IntervalSet t = mandatory.get(a);
 			for (int tok : t.toArray()) {
-				if (acc.contains(tok)) return;
+				if (acc.contains(tok)) { deferArms(s, grp); return; }
 				acc.add(tok);
 			}
 			for (int tok : defaultSet.toArray()) {
-				if (t.contains(tok)) return;
+				if (t.contains(tok)) { deferArms(s, grp); return; }
 			}
 		}
 		if (!nullable.isEmpty()) grp.defaultAlt = nullable.iterator().next();
@@ -356,6 +441,44 @@ public class SharedDescentAnalyzer {
 		grp.codegenable = grp.defaultAlt != 0 || anyTokens;
 	}
 
+	/** Mark the group's dispatch as guarded (see {@link Group#guardedDispatch}):
+	 *  the plan-time proof failed against a nullable member's
+	 *  grammar-wide FOLLOW, so the tail dispatch arms commit only when
+	 *  the real parse stack's postfix chase cannot consume the dispatch
+	 *  token (evaluated at runtime). Arms are the members' in-decision
+	 *  tail FIRST sets minus every other member's; the nullable
+	 *  members' grammar-wide continuations are the guard's business,
+	 *  not the arms'. */
+	private void deferArms(DecisionState s, Group grp) {
+		boolean any = false;
+		for (int a = grp.alts.nextSetBit(0); a >= 0; a = grp.alts.nextSetBit(a+1)) {
+			IntervalSet others = new IntervalSet();
+			for (int y = grp.alts.nextSetBit(0); y >= 0; y = grp.alts.nextSetBit(y+1)) {
+				if (y != a) others.addAll(grp.tailFirst.get(y));
+			}
+			IntervalSet arm = IntervalSet.subtract(grp.tailFirst.get(a), others);
+			if (!arm.isNil()) {
+				grp.explicitArms.put(a, arm);
+				any = true;
+			}
+		}
+		// no default commit: every unclaimed token defers to the
+		// adaptive engine through the widen arm
+		grp.defaultAlt = 0;
+		grp.armsDeferred = false;
+		grp.guardedDispatch = any;
+		grp.codegenable = any;
+		if (any && "descent".equals(System.getProperty("antlr.dfa.debug"))) {
+			System.err.printf("ARMS-GUARDED d=%d rule=%s alts=%s arms=%s nullable=%s%n",
+				s.decision, g.getRule(grp.rule).name, grp.alts, grp.explicitArms,
+				grp.nullableMembers);
+			for (int a = grp.alts.nextSetBit(0); a >= 0; a = grp.alts.nextSetBit(a+1)) {
+				System.err.printf("  TAILFIRST d=%d alt=%d %s%n",
+					s.decision, a, grp.tailFirst.get(a).toString(g.getVocabulary()));
+			}
+		}
+	}
+
 	/**
 	 * FIRST tokens of the mandatory continuation after R along one
 	 * recorded descent chain (over-approximated by full callee LOOK);
@@ -366,7 +489,8 @@ public class SharedDescentAnalyzer {
 	 * outer frame's follow, never grammar-wide).
 	 */
 	private IntervalSet mandatoryTailChain(DecisionState s, List<RuleTransition> chain,
-										   LL1Analyzer ll1, Set<Integer> nullable) {
+										   LL1Analyzer ll1, Set<Integer> nullable,
+										   IntervalSet tailOnly) {
 		IntervalSet tokens = new IntervalSet();
 		Set<ATNState> seen = new HashSet<ATNState>();
 		Deque<ATNState> work = new ArrayDeque<ATNState>();
@@ -381,7 +505,15 @@ public class SharedDescentAnalyzer {
 				}
 				else if (p.ruleIndex == s.ruleIndex) {
 					nullable.add(1);
-					tokens.addAll(ll1.LOOK(p, null));
+					// the decision rule's FOLLOW: the tool's stop states carry
+					// grammar-wide follow links; LOOK(p, null) itself yields
+					// only epsilon at a stop, so chase them explicitly (the
+					// default arm's viable set must be grammar-wide for the
+					// dispatch's collision check to be sound)
+					for (int i = 0; i < p.getNumberOfTransitions(); i++) {
+						Transition t = p.transition(i);
+						if (t.isEpsilon()) tokens.addAll(ll1.LOOK(t.target, null));
+					}
 				}
 				continue;
 			}
@@ -389,6 +521,7 @@ public class SharedDescentAnalyzer {
 				Transition t = p.transition(i);
 				if (t instanceof RuleTransition) {
 					tokens.addAll(ll1.LOOK(t.target, null));
+					tailOnly.addAll(ll1.LOOK(t.target, null));
 					work.add(((RuleTransition)t).followState);
 				}
 				else if (t.isEpsilon()) {
@@ -396,6 +529,7 @@ public class SharedDescentAnalyzer {
 				}
 				else if (t.label() != null) {
 					tokens.addAll(t.label());
+					tailOnly.addAll(t.label());
 				}
 			}
 		}
@@ -447,7 +581,7 @@ public class SharedDescentAnalyzer {
 		}
 		// Chain-descended group, no R segment in the chain.
 		int v = checkDescent(c.state, grp.rule,
-			new HashMap<Long, Integer>(), new HashSet<Long>());
+			new HashMap<Long, Integer>(), new HashSet<Long>(), null);
 		// Inert configuration: the position cannot reach R at all and
 		// every deviation from it was approved by the member gate's
 		// side-exit discipline - it can never interact with the descent.
@@ -587,7 +721,7 @@ public class SharedDescentAnalyzer {
 					RuleTransition rt = (RuleTransition)t;
 					if (rt.target.ruleIndex == ruleR) continue; // R is a barrier
 					work.add(rt.target);
-					if (checkDescent(rt.target, ruleR, memo, inProgress) != V_ALWAYS) {
+					if (checkDescent(rt.target, ruleR, memo, inProgress, null) != V_ALWAYS) {
 						work.add(rt.followState);
 					}
 				}
@@ -811,6 +945,9 @@ public class SharedDescentAnalyzer {
 		int callSite = -1;
 		int boundary = -1;
 		final List<RuleTransition> chain = new ArrayList<RuleTransition>();
+		/** Side-exit tokens gating the body's first R call (conditional
+		 *  membership; see Group#headGuard). */
+		final IntervalSet headTokens = new IntervalSet();
 	}
 
 	/**
@@ -852,6 +989,12 @@ public class SharedDescentAnalyzer {
 					p.chain.addAll(nextChain);
 					out.add(p);
 					work.add(new Object[]{t.target, tokens, Boolean.TRUE, nextChain});
+					if (nullableOf(rt.target.ruleIndex)) {
+						// a nullable wrapper completes token-free: the descent
+						// continues past it (e.g. a function call's optional
+						// processing-mode head before the function name)
+						work.add(new Object[]{rt.followState, tokens, inRule, chain});
+					}
 				}
 				else if (t.isEpsilon()) {
 					work.add(new Object[]{t.target, tokens, inRule, chain});
@@ -908,7 +1051,7 @@ public class SharedDescentAnalyzer {
 			return firstConsumerUniqueShallow(start, p.rule);
 		}
 		return checkDescent(start, p.rule,
-			new HashMap<Long, Integer>(), new HashSet<Long>()) == V_ALWAYS;
+			new HashMap<Long, Integer>(), new HashSet<Long>(), p.headTokens) == V_ALWAYS;
 	}
 
 	/** The pre-chain-descent member gate: every epsilon path from
@@ -956,11 +1099,35 @@ public class SharedDescentAnalyzer {
 	 *  veto), V_VETO when a side exit can be taken on the commit region.
 	 *  Memoized per (R, start state); genuine recursion on the clean
 	 *  descent vetoes (conservative). */
+	/** Verdict of the descent from {@code start} (a state inside one
+	 *  rule body, no consumption so far) to the body's first R call:
+	 *  V_ALWAYS when every path that survives the side-exit checks calls
+	 *  R before completing, V_SOMETIMES when R is called on some path
+	 *  but a survivable R-less completion also exists, V_NOCLEAN when no
+	 *  clean path to R exists but every side exit was approved (the
+	 *  position is unreachable on the commit region - exempt, not a
+	 *  veto), V_VETO when a side exit can be taken on the commit region.
+	 *  Memoized per (R, start state); genuine recursion on the clean
+	 *  descent vetoes (conservative).
+	 *
+	 *  <p>When {@code headTokens} is non-null the walk runs in
+	 *  <em>collecting</em> mode (the member gate's conditional
+	 *  admission): instead of vetoing, an overlapping side token without
+	 *  R-ward priority and a callee whose own descent vetoes are gated
+	 *  into {@code headTokens} - on lookahead outside the set no pre-R
+	 *  consumption can happen (the side token is not it, and a gated
+	 *  callee cannot start), so the body's first R call is the first
+	 *  consumed token. A callee that cannot reach R at all (V_NOCLEAN -
+	 *  inert on the commit region) is treated as a nullable wrapper: the
+	 *  R path past it is explored. */
 	private int checkDescent(ATNState start, int ruleR,
-							 Map<Long, Integer> memo, Set<Long> inProgress) {
+							 Map<Long, Integer> memo, Set<Long> inProgress,
+							 IntervalSet headTokens) {
 		Long mkey = (((long)ruleR) << 32) | start.stateNumber;
-		Integer m = memo.get(mkey);
-		if (m != null) return m;
+		if (headTokens == null) {
+			Integer m = memo.get(mkey);
+			if (m != null) return m;
+		}
 		if (!inProgress.add(mkey)) return V_VETO;
 		IntervalSet firstR = firstOfRule(ruleR);
 		boolean foundR = false;
@@ -980,10 +1147,19 @@ public class SharedDescentAnalyzer {
 					int callee = rt.target.ruleIndex;
 					if (callee == ruleR) { foundR = true; continue; }
 					if (firstOfRule(callee).and(firstR).isNil()) continue; // disjoint side call
-					int v = checkDescent(rt.target, ruleR, memo, inProgress);
-					if (v == V_VETO) { veto = true; break; }
+					int v = checkDescent(rt.target, ruleR, memo, inProgress, headTokens);
+					if (v == V_VETO) {
+						if (headTokens != null) {
+							// the callee's internal veto is unreachable without
+							// entering it, and entering consumes a FIRST(callee)
+							// token first - gate the whole call on it
+							headTokens.addAll(firstOfRule(callee));
+							continue;
+						}
+						veto = true; break;
+					}
 					foundR = true;
-					if (v == V_SOMETIMES) work.add(rt.followState);
+					if (v == V_SOMETIMES || v == V_NOCLEAN) work.add(rt.followState);
 				}
 				else if (t.isEpsilon()) {
 					work.add(t.target);
@@ -995,13 +1171,14 @@ public class SharedDescentAnalyzer {
 					continue; // disjoint side token
 				}
 				else if (!tokenPriority(st, ruleR)) {
-					veto = true;
+					if (headTokens != null) headTokens.addAll(t.label());
+					else veto = true;
 				}
 			}
 		}
 		inProgress.remove(mkey);
 		int v = veto ? V_VETO : !foundR ? V_NOCLEAN : (rLess ? V_SOMETIMES : V_ALWAYS);
-		memo.put(mkey, v);
+		if (headTokens == null) memo.put(mkey, v);
 		return v;
 	}
 

@@ -854,7 +854,7 @@ descentMaskPredict(choice, groups) ::= <<
 >>
 
 DescentGroup(g, tails) ::= <<
-    x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 && !<self()>.base.resume_active() => {
+    x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 && !<self()>.base.resume_active()<if(g.firstCheck)> && <g.firstCheck><endif><if(g.headGuard)> && <g.headGuard><endif> => {
         <self()>.base.set_state(<g.callSiteState>);
         let _neutral_state = <self()>.base.begin_neutral_parse(<g.prefixLen>);
         match <self()>.<g.ruleName>() {
@@ -879,10 +879,10 @@ DescentGroup(g, tails) ::= <<
                     // resume mode; anything else rewinds and defers to the
                     // adaptive engine from the decision start - no resume,
                     // the chosen body re-parses everything
-                    let _tailbit = match <self()>.input.la(1) {
+                    let _tailbit = { let _t = <self()>.input.la(1); match _t {
                         <tails; separator="\n">
                         _ => <if(g.defaultBit)>Some(<g.defaultBit>)<else>None<endif>,
-                    };
+                    } };
                     match _tailbit {
                         Some(bit) => {
                             <self()>.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_<g.ruleName>);
@@ -901,7 +901,7 @@ DescentGroup(g, tails) ::= <<
     x if x != 0 && (x & !<g.coverBits>) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32),
 >>
 
-Tail(t) ::= "<t.armKey> => Some(<t.altBit>),"
+Tail(t) ::= "<t.armKey> if !<t.guarded> || !<self()>.base.follow_contains(_t) => Some(<t.altBit>),"
 
 // Resume-mode short-circuit at the top of a resume-target rule: when a
 // shared-descent re-descent reaches the common rule, return the stored
