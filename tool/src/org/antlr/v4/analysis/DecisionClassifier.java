@@ -193,6 +193,16 @@ public class DecisionClassifier {
 		 *  fires (mirror + vetoes pass): would accept take (alt 1). */
 		public int takeRuleFires;
 		public int guardedTakes;
+		/** Iterate/exit conflict states of a precedence-class build
+		 *  resolved to iterate (alt 1) by the guarded-iterate escape:
+		 *  vetoed by the enter/exit substitution only on foreign
+		 *  consumption, every foreign exit configuration rooted (see
+		 *  {@link #finalizeGuardedIterates}). */
+		public int guardedIterates;
+		/** Iterate/exit conflicts resolved to iterate outright: the
+		 *  guarded-iterate escape found the foreign consumption
+		 *  unreachable on every real stack (empty danger set). */
+		public int iterateAccepts;
 		/** Conflict states resolved to min(U) by the uniform-widening
 		 *  trust (every context entry has an assured min attestation). */
 		public int utrustResolutions;
@@ -961,6 +971,8 @@ public class DecisionClassifier {
 				}
 				res.sawPrecPredicate |= attempt.sawPrecPredicate;
 				res.usedWidening |= attempt.usedWidening;
+				res.guardedIterates += attempt.guardedIterates;
+				res.iterateAccepts += attempt.iterateAccepts;
 				if (note.length() > 0) note.append(' ');
 				note.append("p").append(c == 0 ? "<=" + cutoffs[0]
 					: c < cutoffs.length ? "=" + (cutoffs[c-1]+1) + ".." + cutoffs[c]
@@ -1248,6 +1260,7 @@ public class DecisionClassifier {
 		List<Integer> stateDepth = new ArrayList<Integer>(); // lookahead depth (BFS layer)
 		List<Set<Integer>> ownRoots = new ArrayList<Set<Integer>>(); // postfix guard roots entering each state
 		Map<Integer, BitSet> guardCandidates = new LinkedHashMap<Integer, BitSet>(); // take-vetoed conflict states -> their conflicting alternatives (null for budget escapes, never conflict-analyzed)
+		Map<Integer, BitSet> guardIterateCandidates = new LinkedHashMap<Integer, BitSet>(); // iterate/exit conflicts vetoed only on foreign consumption -> their conflicting alternatives
 		this.currentDecisionRule = s.ruleIndex;
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
@@ -1423,6 +1436,13 @@ public class DecisionClassifier {
 									c.reachesIntoOuterContext, tr, decodeContext(c.context));
 							}
 						}
+					}
+					if (hybridMode && exitForeign && !exitObligated && iterateReal) {
+						// vetoed only by foreign consumption of the exit
+						// lineage: a candidate for the guarded-iterate escape
+						// (resolved after construction, once guard roots have
+						// propagated)
+						guardIterateCandidates.put(d, conflicting);
 					}
 				}
 
@@ -1762,6 +1782,13 @@ public class DecisionClassifier {
 			guard = finalizeGuardedTakes(s, states, edges, acceptAlts, acceptMasks,
 				ownRoots, guardCandidates, guardAlts, res);
 		}
+		if (guard == null && hybridMode && currentPostfixShape == null
+			&& !guardIterateCandidates.isEmpty() && !overflow && !res.sawPredicate) {
+			// iterate/exit conflicts vetoed only on foreign consumption get
+			// a second chance: the guarded-iterate escape
+			guard = finalizeGuardedIterates(s, states, edges, acceptAlts, acceptMasks,
+				ownRoots, guardIterateCandidates, guardAlts, res);
+		}
 
 		if ("states".equals(System.getProperty("antlr.dfa.debug"))
 			&& String.valueOf(currentDecisionNumber).equals(System.getProperty("antlr.dfa.debug.decision"))) {
@@ -1859,30 +1886,7 @@ public class DecisionClassifier {
 										 Map<Integer, BitSet> guardCandidates,
 										 List<Integer> guardAlts,
 										 Result res) {
-		int n = states.size();
-		// propagate guard roots through the edge graph to a fixpoint:
-		// through[s] = own[s] ∪ ∪_{p→s} through[p]
-		List<Set<Integer>> through = new ArrayList<Set<Integer>>(n);
-		Deque<Integer> rq = new ArrayDeque<Integer>();
-		for (int i = 0; i < n; i++) {
-			Set<Integer> own = ownRoots.get(i);
-			through.add(own != null ? new HashSet<Integer>(own) : null);
-			if (own != null) rq.add(i);
-		}
-		while (!rq.isEmpty()) {
-			int p = rq.remove();
-			Set<Integer> rp = through.get(p);
-			for (int t : edges.get(p)) {
-				Set<Integer> rt = through.get(t);
-				if (rt == null) {
-					through.set(t, new HashSet<Integer>(rp));
-					rq.add(t);
-				}
-				else if (rt.addAll(rp)) {
-					rq.add(t);
-				}
-			}
-		}
+		List<Set<Integer>> through = propagateGuardRoots(states, edges, ownRoots);
 
 		Set<Integer> G = new HashSet<Integer>();
 		List<Integer> guarded = new ArrayList<Integer>();
@@ -1962,12 +1966,160 @@ public class DecisionClassifier {
 			}
 			return null;
 		}
+		return computeGuardData(G);
+	}
 
-		// danger[s]: an invoking state whose follow's epsilon-reachable
-		// region contains a guard root; pass[s]: the follow can reach its
-		// own rule's stop (the chase may keep popping). Exotic states with
-		// several rule transitions: danger = any follow, pass = all follows
-		// (conservative in both directions).
+	/**
+	 * Guarded-iterate escape of a precedence-class build: an iterate/exit
+	 * conflict the enter/exit substitution vetoed only on foreign
+	 * consumption (the phantom consumer is not an enclosing invocation of
+	 * this loop - the canonical shape is Trino's BETWEEN separator AND
+	 * colliding with the booleanExpression loop's own AND). Exit
+	 * configurations that stayed in the loop discipline (no
+	 * FOREIGN_CONSUME_TAINT) are covered by the substitution's rejoin
+	 * argument and need no guard; foreign ones are realizable only on
+	 * runtime stacks whose epsilon-pop chase from the loop's exit reaches
+	 * a guard root recorded when the foreign consumption was marked (the
+	 * consumption position, plus the call sites of its non-loop context
+	 * frames). The conflict resolves to iterate (alt 1) under the stack
+	 * guard, or outright when no invoking state in the grammar can trip
+	 * the guard: then the foreign consumption is epsilon-hidden from
+	 * every follow region (it sits behind tokens no exit lineage can
+	 * skip), so exit can never uniquely win on a real stack.
+	 */
+	protected GuardData finalizeGuardedIterates(DecisionState s,
+											List<Set<ATNConfig>> states,
+											List<List<Integer>> edges,
+											List<Integer> acceptAlts,
+											List<Long> acceptMasks,
+											List<Set<Integer>> ownRoots,
+											Map<Integer, BitSet> guardIterateCandidates,
+											List<Integer> guardAlts,
+											Result res) {
+		List<Set<Integer>> through = propagateGuardRoots(states, edges, ownRoots);
+
+		Set<Integer> G = new HashSet<Integer>();
+		List<Integer> guarded = new ArrayList<Integer>();
+		for (Map.Entry<Integer, BitSet> cand : guardIterateCandidates.entrySet()) {
+			int d = cand.getKey();
+			if (acceptAlts.get(d) != StaticDFA.ESCAPE || acceptMasks.get(d) != 0) continue;
+			Set<Integer> roots = through.get(d);
+			if (roots == null || roots.isEmpty()) continue;
+			boolean eligible = true;
+			boolean realTake = false;
+			for (ATNConfig c : states.get(d)) {
+				int taint = c.reachesIntoOuterContext;
+				if (c.alt == 1
+					&& (taint & (WIDENED_TAINT|FOREIGN_CONSUME_TAINT)) == 0) {
+					realTake = true;
+				}
+				if (c.alt != 2) continue;
+				// foreign consumption must be rooted: then the stack guard
+				// covers its realizability
+				if ((taint & FOREIGN_CONSUME_TAINT) != 0
+					&& (taint & ROOTED_TAINT) == 0) {
+					eligible = false;
+					break;
+				}
+				// a widening-born exit configuration is an analysis
+				// artifact unless it is rooted: then its consumption
+				// positions are guard-recorded
+				if ((taint & (WIDENED_TAINT|ROOTED_TAINT)) == WIDENED_TAINT) {
+					eligible = false;
+					break;
+				}
+			}
+			if (!eligible || !realTake) continue;
+			res.approxConflicts.remove(cand.getValue());
+			res.contextSensitiveConflicts.remove(cand.getValue());
+			res.exactAmbigConflicts.add(cand.getValue());
+			acceptAlts.set(d, StaticDFA.GUARDED);
+			guardAlts.set(d, 1);
+			guarded.add(d);
+			G.addAll(roots);
+			res.guardedIterates++;
+			if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("GUARD-ITERATE d=%d state=%d roots=%s%n",
+					s.decision, d, new TreeSet<Integer>(roots));
+			}
+		}
+		if (guarded.isEmpty()) return null;
+
+		RuleStopState stop = atn.ruleToStopState[s.ruleIndex];
+		if (stop != null) {
+			Set<Integer> reach0 = reachEps(stop.stateNumber);
+			reach0.retainAll(G);
+			if (!reach0.isEmpty()) {
+				// a root is epsilon-reachable from the loop's exit
+				// continuation without popping any frame: the guard would
+				// defer on every stack - useless
+				for (int d : guarded) {
+					acceptAlts.set(d, StaticDFA.ESCAPE);
+					guardAlts.set(d, 0);
+					res.guardedIterates--;
+				}
+				return null;
+			}
+		}
+
+		GuardData gd = computeGuardData(G);
+		if (gd.danger.length == 0) {
+			// no invocation's follow region contains a root: the foreign
+			// consumption is unreachable on every real stack past the
+			// loop's stop, so exit can never uniquely win - plain iterate
+			// accepts
+			for (int d : guarded) {
+				acceptAlts.set(d, 1);
+				guardAlts.set(d, 0);
+				res.guardedIterates--;
+				res.iterateAccepts++;
+			}
+			if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("GUARD-ITERATE-STATIC d=%d states=%s%n",
+					s.decision, guarded);
+			}
+			return null;
+		}
+		return gd;
+	}
+
+	/** Propagate guard roots through the edge graph to a fixpoint:
+	 *  through[s] = own[s] ∪ ∪_{p→s} through[p]. */
+	private static List<Set<Integer>> propagateGuardRoots(List<Set<ATNConfig>> states,
+														  List<List<Integer>> edges,
+														  List<Set<Integer>> ownRoots) {
+		int n = states.size();
+		List<Set<Integer>> through = new ArrayList<Set<Integer>>(n);
+		Deque<Integer> rq = new ArrayDeque<Integer>();
+		for (int i = 0; i < n; i++) {
+			Set<Integer> own = ownRoots.get(i);
+			through.add(own != null ? new HashSet<Integer>(own) : null);
+			if (own != null) rq.add(i);
+		}
+		while (!rq.isEmpty()) {
+			int p = rq.remove();
+			Set<Integer> rp = through.get(p);
+			for (int t : edges.get(p)) {
+				Set<Integer> rt = through.get(t);
+				if (rt == null) {
+					through.set(t, new HashSet<Integer>(rp));
+					rq.add(t);
+				}
+				else if (rt.addAll(rp)) {
+					rq.add(t);
+				}
+			}
+		}
+		return through;
+	}
+
+	/** Danger/pass state sets of a guard root set (see {@link GuardData}):
+	 *  danger[s]: an invoking state whose follow's epsilon-reachable
+	 *  region contains a guard root; pass[s]: the follow can reach its
+	 *  own rule's stop (the chase may keep popping). Exotic states with
+	 *  several rule transitions: danger = any follow, pass = all follows
+	 *  (conservative in both directions). */
+	private GuardData computeGuardData(Set<Integer> G) {
 		List<Integer> danger = new ArrayList<Integer>();
 		List<Integer> pass = new ArrayList<Integer>();
 		for (ATNState st : atn.states) {
@@ -2028,12 +2180,27 @@ public class DecisionClassifier {
 	 * nothing - they are realizable through the decision's own take path.
 	 */
 	protected void collectGuardRoots(ATNConfig c, Set<Integer> out) {
-		collectGuardRoots(c, c.context, out,
+		java.util.BitSet mirror = new java.util.BitSet();
+		mirror.set(currentPostfixShape.blockEndState);
+		collectGuardRoots(c, out, mirror);
+	}
+
+	/**
+	 * {@link #collectGuardRoots(ATNConfig, Set)} with an explicit mirror
+	 * set: deepest frames returning into {@code mirrorFollows} are
+	 * realizable through the decision's own discipline (the postfix block
+	 * end for the take guard, the operator-loop block for the iterate
+	 * guard) and contribute no roots.
+	 */
+	protected void collectGuardRoots(ATNConfig c, Set<Integer> out,
+									 java.util.BitSet mirrorFollows) {
+		collectGuardRoots(c, c.context, out, mirrorFollows,
 			java.util.Collections.newSetFromMap(
 				new java.util.IdentityHashMap<PredictionContext, Boolean>()));
 	}
 
 	private void collectGuardRoots(ATNConfig c, PredictionContext ctx, Set<Integer> out,
+								   java.util.BitSet mirrorFollows,
 								   Set<PredictionContext> visited) {
 		if (ctx == null || ctx.isEmpty()) {
 			out.add(c.state.stateNumber);
@@ -2047,13 +2214,13 @@ public class DecisionClassifier {
 				if (rs == PredictionContext.EMPTY_RETURN_STATE) {
 					out.add(c.state.stateNumber);
 				}
-				else if (rs != currentPostfixShape.blockEndState) {
+				else if (!mirrorFollows.get(rs)) {
 					Integer site = siteByFollowState().get(rs);
 					out.add(site != null ? site : rs);
 				}
 			}
 			else {
-				collectGuardRoots(c, p, out, visited);
+				collectGuardRoots(c, p, out, mirrorFollows, visited);
 			}
 		}
 	}
@@ -2350,6 +2517,28 @@ public class DecisionClassifier {
 							// operator loop: the phantom consumer is not an
 							// enclosing invocation of this loop
 							advanced.reachesIntoOuterContext |= FOREIGN_CONSUME_TAINT;
+							if (c.alt == 2 && currentPostfixShape == null
+								&& (c.reachesIntoOuterContext & ROOTED_TAINT) == 0) {
+								// exit-lineage consumption outside the loop
+								// discipline: the advanced configuration is
+								// realizable only on runtime stacks whose
+								// epsilon-pop chase reaches the root position(s)
+								// this consumption passed through - record them
+								// for the guarded-iterate escape. The
+								// consumption position itself is a root: an exit
+								// that wins on a real stack must reach it through
+								// the popped frames, and the guard's danger set
+								// (invoking states whose follow region contains
+								// a root) covers exactly those stacks. Loop-block
+								// frames play the mirror role the block end
+								// plays for the postfix guard: consumption
+								// bottoming there is covered by the enter/exit
+								// substitution and needs no guard.
+								advanced.reachesIntoOuterContext |= ROOTED_TAINT;
+								if (succRoots == null) succRoots = new HashSet<Integer>();
+								succRoots.add(c.state.stateNumber);
+								collectGuardRoots(c, succRoots, precLoopStates);
+							}
 							if ("full".equals(System.getProperty("antlr.dfa.debug"))
 								&& (c.reachesIntoOuterContext & FOREIGN_CONSUME_TAINT) == 0) {
 								System.err.printf("FOREIGN-MARK rule=%s state=%d alt=%d taint=%d ctx=%s label=%s%n",
@@ -3251,6 +3440,15 @@ public class DecisionClassifier {
 		for (Result r : results) utrust += r.utrustResolutions;
 		if (utrust > 0) {
 			buf.append(String.format("utrust: %d conflict states resolved to min-alt%n", utrust));
+		}
+		int iterGuards = 0, iterAccepts = 0;
+		for (Result r : results) {
+			iterGuards += r.guardedIterates;
+			iterAccepts += r.iterateAccepts;
+		}
+		if (iterGuards > 0 || iterAccepts > 0) {
+			buf.append(String.format("iterate-guard: %d conflict states guarded, %d resolved outright%n",
+				iterGuards, iterAccepts));
 		}
 		int descentPlans = 0, descentMasks = 0;
 		for (Result r : results) {
