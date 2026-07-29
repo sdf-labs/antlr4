@@ -114,6 +114,7 @@ mod atn_type;
 // mod context_factory;
 pub mod rule_context;
 pub mod vocabulary;
+pub mod prelude;
 
 // ======= Re-exports ========
 #[cfg(feature = "stacker")]
@@ -833,4 +834,598 @@ macro_rules! cast_unchecked {
         let ptr = ($ptr as *mut _ as *mut ()).cast::<$target>();
         unsafe { &mut *ptr }
     }};
+}
+
+/// Generates the boilerplate for a grammar rule's context extension type.
+///
+/// Full form (field-less plain contexts) emits the context type alias, the
+/// extension struct, its `create` constructor and the `CustomRuleContext`
+/// impl. The `@plain`/`@labeled`/`@alt` arms emit only the
+/// `CustomRuleContext` impl for contexts whose struct and constructor the
+/// generated code declares itself (labeled fields, rule arguments,
+/// `contextSuperClass`, or labeled alternatives).
+#[macro_export]
+macro_rules! impl_ctx {
+    // Field-less plain rule context: alias + extension struct + `create`
+    // + `CustomRuleContext` impl.
+    ($nodekind:ident, $ctx:ident, $ext:ident, $rule:expr) => {
+        pub type $ctx<'input, 'arena, Tok = $crate::token::CommonToken<'input>> =
+            $crate::parser_rule_context::BaseParserRuleContext<
+                'input,
+                'arena,
+                $ext<'input, 'arena, Tok>,
+                $nodekind,
+                Tok,
+            >;
+
+        #[derive(Debug)]
+        pub struct $ext<'input: 'arena, 'arena, Tok: $crate::token::Token + 'input = $crate::token::CommonToken<'input>> {
+            ph: ::std::marker::PhantomData<(&'arena (), &'input Tok)>,
+        }
+
+        impl<'input: 'arena, 'arena, Tok: $crate::token::Token + 'input> $ext<'input, 'arena, Tok> {
+            fn create(
+                arena: &'arena $crate::Arena,
+                parent: ::std::option::Option<
+                    &'arena $crate::tree::TreeNode<'input, 'arena, $nodekind, Tok>,
+                >,
+                invoking_state: i32,
+            ) -> ::std::result::Result<
+                &'arena mut $crate::tree::TreeNode<'input, 'arena, $nodekind, Tok>,
+                $crate::errors::ANTLRError,
+            > {
+                $crate::parser_rule_context::BaseParserRuleContext::create(
+                    arena,
+                    parent,
+                    invoking_state,
+                    $ext {
+                        ph: ::std::marker::PhantomData,
+                    },
+                )
+            }
+        }
+
+        $crate::impl_ctx!(@plain $nodekind::$ctx, $ext, $rule);
+    };
+
+    // `CustomRuleContext` impl for a plain node payload (`alloc_zeroed_node`).
+    (@plain $nodekind:ident::$variant:ident, $ext:ident, $rule:expr) => {
+        impl<'input: 'arena, 'arena, Tok> $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>
+            for $ext<'input, 'arena, Tok>
+        where
+            Tok: $crate::token::Token + 'input,
+        {
+            type NodeKind = $nodekind;
+
+            fn node_tag() -> $nodekind {
+                $nodekind::$variant
+            }
+
+            fn get_rule_index(&self) -> usize {
+                $rule
+            }
+
+            fn make_node(
+                arena: &'arena $crate::Arena,
+                ctx: $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            ) -> *mut $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok> {
+                arena.alloc_zeroed_node(ctx)
+            }
+
+            fn cast_from<'a>(
+                node: &'a $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok>,
+            ) -> ::std::option::Option<
+                &'a $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            > {
+                if node.node_tag()
+                    == <Self as $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>>::node_tag()
+                {
+                    ::std::option::Option::Some($crate::cast_unchecked!(node.ctx_ptr() => $crate::parser_rule_context::BaseParserRuleContext<'input, 'arena, Self, Self::NodeKind, Tok>))
+                } else {
+                    ::std::option::Option::None
+                }
+            }
+
+            fn cast_from_mut<'a>(
+                node: &'a mut $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok>,
+            ) -> ::std::option::Option<
+                &'a mut $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            > {
+                if node.node_tag()
+                    == <Self as $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>>::node_tag()
+                {
+                    ::std::option::Option::Some($crate::cast_unchecked!(node.ctx_ptr() => mut $crate::parser_rule_context::BaseParserRuleContext<'input, 'arena, Self, Self::NodeKind, Tok>))
+                } else {
+                    ::std::option::Option::None
+                }
+            }
+        }
+    };
+
+    // `CustomRuleContext` impl for the base context of a rule with labeled
+    // alternatives: the node payload is the `<Rule>ContextAll` enum and fresh
+    // nodes start as its `Error` variant.
+    (@labeled $nodekind:ident::$variant:ident, $ctxall:ident, $ext:ident, $rule:expr) => {
+        impl<'input: 'arena, 'arena, Tok> $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>
+            for $ext<'input, 'arena, Tok>
+        where
+            Tok: $crate::token::Token + 'input,
+        {
+            type NodeKind = $nodekind;
+
+            fn node_tag() -> $nodekind {
+                $nodekind::$variant
+            }
+
+            fn get_rule_index(&self) -> usize {
+                $rule
+            }
+
+            fn make_node(
+                arena: &'arena $crate::Arena,
+                ctx: $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            ) -> *mut $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok> {
+                arena.alloc_labeled_node($ctxall::Error(ctx))
+            }
+
+            fn cast_from<'a>(
+                node: &'a $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok>,
+            ) -> ::std::option::Option<
+                &'a $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            > {
+                if node.node_tag()
+                    == <Self as $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>>::node_tag()
+                {
+                    ::std::option::Option::Some($crate::cast_unchecked!(node.ctx_ptr() => $crate::parser_rule_context::BaseParserRuleContext<'input, 'arena, Self, Self::NodeKind, Tok>))
+                } else {
+                    ::std::option::Option::None
+                }
+            }
+
+            fn cast_from_mut<'a>(
+                node: &'a mut $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok>,
+            ) -> ::std::option::Option<
+                &'a mut $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            > {
+                if node.node_tag()
+                    == <Self as $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>>::node_tag()
+                {
+                    ::std::option::Option::Some($crate::cast_unchecked!(node.ctx_ptr() => mut $crate::parser_rule_context::BaseParserRuleContext<'input, 'arena, Self, Self::NodeKind, Tok>))
+                } else {
+                    ::std::option::Option::None
+                }
+            }
+        }
+    };
+
+    // `CustomRuleContext` impl for one labeled alternative of a rule: shares
+    // the base rule's node tag, casts through the `<Rule>ContextAll` enum.
+    (@alt $nodekind:ident::$base:ident, $ctxall:ident::$variant:ident, $ext:ident, $rule:expr) => {
+        impl<'input: 'arena, 'arena, Tok> $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>
+            for $ext<'input, 'arena, Tok>
+        where
+            Tok: $crate::token::Token + 'input,
+        {
+            type NodeKind = $nodekind;
+
+            fn node_tag() -> $nodekind {
+                $nodekind::$base
+            }
+
+            fn get_rule_index(&self) -> usize {
+                $rule
+            }
+
+            fn make_node(
+                arena: &'arena $crate::Arena,
+                ctx: $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            ) -> *mut $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok> {
+                arena.alloc_labeled_node($ctxall::$variant(ctx))
+            }
+
+            fn cast_from<'a>(
+                node: &'a $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok>,
+            ) -> ::std::option::Option<
+                &'a $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            > {
+                if node.node_tag()
+                    == <Self as $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>>::node_tag()
+                {
+                    match $crate::cast_unchecked!(node => $ctxall<'input, 'arena, Tok>) {
+                        $ctxall::$variant(ctx) => ::std::option::Option::Some(ctx),
+                        _ => ::std::option::Option::None,
+                    }
+                } else {
+                    ::std::option::Option::None
+                }
+            }
+
+            fn cast_from_mut<'a>(
+                node: &'a mut $crate::tree::TreeNode<'input, 'arena, Self::NodeKind, Tok>,
+            ) -> ::std::option::Option<
+                &'a mut $crate::parser_rule_context::BaseParserRuleContext<
+                    'input,
+                    'arena,
+                    Self,
+                    Self::NodeKind,
+                    Tok,
+                >,
+            > {
+                if node.node_tag()
+                    == <Self as $crate::rule_context::CustomRuleContext<'input, 'arena, Tok>>::node_tag()
+                {
+                    match $crate::cast_unchecked!(node => mut $ctxall<'input, 'arena, Tok>) {
+                        $ctxall::$variant(ctx) => ::std::option::Option::Some(ctx),
+                        _ => ::std::option::Option::None,
+                    }
+                } else {
+                    ::std::option::Option::None
+                }
+            }
+        }
+    };
+}
+
+/// Rule-body scaffolding for generated parser rule functions: enters the
+/// rule, runs the body, applies the error strategy on recoverable errors and
+/// exits the rule, all inside a stack-growth guard.
+///
+/// The recognizer binding is passed in (`recog = self`) so that the body —
+/// written at the macro call site — can refer to it. The context constructor
+/// is a closure `|parent_ctx| ...` for the same reason.
+///
+/// Forms:
+/// - `parse_rule!(recog = self, parent_ctx, CtxTy, RULE_x, state, create; { body })`
+/// - `parse_rule!(rec recog = self, parent_ctx, parent_state, CtxTy, RULE_x, state, create; prec; { body })`
+///   for left-recursive rules (`expr_rec`).
+/// - `parse_rule!(catch ...; { body }; [exception arms]; [finally])` (and
+///   `catch rec ...`) for rules with `catch`/`finally` blocks.
+#[macro_export]
+macro_rules! parse_rule {
+    (catch rec $recog:ident = $self:expr, $parentctx:ident, $parentstate:ident, $ctx:ty, $rule:expr, $state:expr, $create:expr; $prec:ident; $body:block; [$($exceptions:tt)*]; [$($finally:tt)*]) => {
+        $crate::maybe_grow_stack!({
+            let $recog = $self;
+            let $parentctx = $recog.base.take_ctx();
+            let $parentstate = $recog.base.get_state();
+            $recog
+                .base
+                .enter_recursion_rule(($create)($parentctx)?, $state, $rule, $prec)?;
+            let result: ::std::result::Result<(), $crate::errors::ANTLRError> = (|| {
+                $body
+                ::std::result::Result::Ok(())
+            })();
+            match result {
+                ::std::result::Result::Ok(_) => {}
+                $($exceptions)*
+                ::std::result::Result::Err(e) => {
+                    if !e.is_recoverable() {
+                        return ::std::result::Result::Err(e);
+                    }
+                    $recog.err_handler.report_error(&mut $recog.base, &e);
+                    $recog.err_handler.recover(&mut $recog.base, &e)?;
+                }
+            }
+            $($finally)*
+            $recog
+                .base
+                .unroll_recursion_context($parentctx)
+                .map(|ctx| ctx.as_rule_context().unwrap())
+        })
+    };
+
+    (catch $recog:ident = $self:expr, $parentctx:ident, $ctx:ty, $rule:expr, $state:expr, $create:expr; $body:block; [$($exceptions:tt)*]; [$($finally:tt)*]) => {
+        $crate::maybe_grow_stack!({
+            let $recog = $self;
+            let $parentctx = $recog.base.take_ctx();
+            $recog.base.enter_rule(($create)($parentctx)?, $state, $rule)?;
+            let result: ::std::result::Result<(), $crate::errors::ANTLRError> = (|| {
+                $body
+                ::std::result::Result::Ok(())
+            })();
+            match result {
+                ::std::result::Result::Ok(_) => {}
+                $($exceptions)*
+                ::std::result::Result::Err(e) => {
+                    if !e.is_recoverable() {
+                        return ::std::result::Result::Err(e);
+                    }
+                    $recog.err_handler.report_error(&mut $recog.base, &e);
+                    $recog.err_handler.recover(&mut $recog.base, &e)?;
+                }
+            }
+            $($finally)*
+            $recog
+                .base
+                .exit_rule()
+                .map(|ctx: &'arena _| ctx.as_rule_context().unwrap())
+        })
+    };
+
+    (rec $recog:ident = $self:expr, $parentctx:ident, $parentstate:ident, $ctx:ty, $rule:expr, $state:expr, $create:expr; $prec:ident; $body:block) => {
+        $crate::maybe_grow_stack!({
+            let $recog = $self;
+            let $parentctx = $recog.base.take_ctx();
+            let $parentstate = $recog.base.get_state();
+            $recog
+                .base
+                .enter_recursion_rule(($create)($parentctx)?, $state, $rule, $prec)?;
+            let result: ::std::result::Result<(), $crate::errors::ANTLRError> = (|| {
+                $body
+                ::std::result::Result::Ok(())
+            })();
+            match result {
+                ::std::result::Result::Ok(_) => {}
+                ::std::result::Result::Err(e) => {
+                    if !e.is_recoverable() {
+                        return ::std::result::Result::Err(e);
+                    }
+                    $recog.err_handler.report_error(&mut $recog.base, &e);
+                    $recog.err_handler.recover(&mut $recog.base, &e)?;
+                }
+            }
+            $recog
+                .base
+                .unroll_recursion_context($parentctx)
+                .map(|ctx| ctx.as_rule_context().unwrap())
+        })
+    };
+
+    ($recog:ident = $self:expr, $parentctx:ident, $ctx:ty, $rule:expr, $state:expr, $create:expr; $body:block) => {
+        $crate::maybe_grow_stack!({
+            let $recog = $self;
+            let $parentctx = $recog.base.take_ctx();
+            $recog.base.enter_rule(($create)($parentctx)?, $state, $rule)?;
+            let result: ::std::result::Result<(), $crate::errors::ANTLRError> = (|| {
+                $body
+                ::std::result::Result::Ok(())
+            })();
+            match result {
+                ::std::result::Result::Ok(_) => {}
+                ::std::result::Result::Err(e) => {
+                    if !e.is_recoverable() {
+                        return ::std::result::Result::Err(e);
+                    }
+                    $recog.err_handler.report_error(&mut $recog.base, &e);
+                    $recog.err_handler.recover(&mut $recog.base, &e)?;
+                }
+            }
+            $recog
+                .base
+                .exit_rule()
+                .map(|ctx: &'arena _| ctx.as_rule_context().unwrap())
+        })
+    };
+}
+
+/// Emits the `ParserRecog` and `Actions` impls for a generated parser's
+/// extension struct. References the module-level `ruleNames`, `VOCABULARY`
+/// and `ATN_SIMULATOR_MANAGER` items of the generated file.
+///
+/// With `; sempred (NodeTy, ParserName) { rule_index => rule_sempred, ... }`
+/// an `Actions::sempred` dispatching to the parser's per-rule predicate
+/// functions is also generated.
+#[macro_export]
+macro_rules! impl_parser_recog {
+    ($ext:ident, $nodekind:ident, $file:literal
+     $(; sempred ($node:ty, $parser:ident) { $($srule:expr => $sfn:ident,)* })?
+    ) => {
+        impl<'input, 'arena, Input, TF>
+            $crate::parser::ParserRecog<
+                'input,
+                'arena,
+                $crate::parser::BaseParser<'input, 'arena, $ext<'input, 'arena>, $nodekind, Input, TF>,
+                TF::Tok,
+            > for $ext<'input, 'arena>
+        where
+            'input: 'arena,
+            TF: $crate::token_factory::TokenFactory<'input, 'arena> + 'arena,
+            Input: $crate::token_stream::TokenStream<'input, 'arena, TF> + 'arena,
+        {
+            fn get_atn_simulator_man(
+                &self,
+            ) -> &'static $crate::atn_simulator::ParserATNSimulatorManager {
+                &ATN_SIMULATOR_MANAGER
+            }
+        }
+
+        impl<'input, 'arena, Input, TF>
+            $crate::recognizer::Actions<
+                'input,
+                'arena,
+                $crate::parser::BaseParser<'input, 'arena, $ext<'input, 'arena>, $nodekind, Input, TF>,
+                TF::Tok,
+            > for $ext<'input, 'arena>
+        where
+            'input: 'arena,
+            TF: $crate::token_factory::TokenFactory<'input, 'arena> + 'arena,
+            Input: $crate::token_stream::TokenStream<'input, 'arena, TF> + 'arena,
+        {
+            fn get_grammar_file_name(&self) -> &str {
+                $file
+            }
+
+            fn get_rule_names(&self) -> &[&str] {
+                &ruleNames
+            }
+
+            fn get_vocabulary(&self) -> &dyn $crate::vocabulary::Vocabulary {
+                &**VOCABULARY
+            }
+
+            $(
+            fn sempred(
+                _localctx: ::std::option::Option<&'arena $node>,
+                rule_index: i32,
+                pred_index: i32,
+                recog: &mut $crate::parser::BaseParser<
+                    'input,
+                    'arena,
+                    $ext<'input, 'arena>,
+                    $nodekind,
+                    Input,
+                    TF,
+                >,
+            ) -> bool {
+                match rule_index {
+                    $(
+                    $srule => $parser::<'input, 'arena, Input, TF>::$sfn(
+                        _localctx.and_then(|x| x.as_rule_context()),
+                        pred_index,
+                        recog,
+                    ),
+                    )*
+                    _ => true,
+                }
+            }
+            )?
+        }
+    };
+}
+
+/// Emits the `Actions` and `LexerRecog` impls for a generated lexer's
+/// actions struct. References the module-level `BaseLexerType` alias,
+/// `ruleNames`, `_LITERAL_NAMES`, `_SYMBOLIC_NAMES` and
+/// `ATN_SIMULATOR_MANAGER` items of the generated file.
+///
+/// Optional sections: `; action { rule_index => rule_action, ... }` and
+/// `; sempred { rule_index => rule_sempred, ... }` dispatch to the per-rule
+/// functions on the actions struct; `; extend { ... }` injects extra members
+/// (e.g. a `before_emit` override) into the `LexerRecog` impl.
+#[macro_export]
+macro_rules! impl_lexer_recog {
+    ($actions:ident, $file:literal
+     $(; action { $($arule:expr => $afn:ident,)* })?
+     $(; sempred { $($srule:expr => $sfn:ident,)* })?
+     $(; extend { $($extend:item)* })?
+    ) => {
+        impl<'input, 'arena, Input, TF>
+            $crate::recognizer::Actions<
+                'input,
+                'arena,
+                BaseLexerType<'input, 'arena, Input, TF>,
+                TF::Tok,
+            > for $actions
+        where
+            'input: 'arena,
+            Input: $crate::char_stream::CharStream<'input>,
+            TF: $crate::token_factory::TokenFactory<'input, 'arena> + 'arena,
+        {
+            $(
+            fn action(
+                _localctx: ::std::option::Option<
+                    &'arena $crate::rule_context::EmptyRuleNode<'input, 'arena, TF::Tok>,
+                >,
+                rule_index: i32,
+                action_index: i32,
+                recog: &mut BaseLexerType<'input, 'arena, Input, TF>,
+            ) {
+                match rule_index {
+                    $(
+                    $arule => $actions::$afn(action_index, recog),
+                    )*
+                    _ => {}
+                }
+            }
+            )?
+
+            $(
+            fn sempred(
+                _localctx: ::std::option::Option<
+                    &'arena $crate::rule_context::EmptyRuleNode<'input, 'arena, TF::Tok>,
+                >,
+                rule_index: i32,
+                pred_index: i32,
+                recog: &mut BaseLexerType<'input, 'arena, Input, TF>,
+            ) -> bool {
+                match rule_index {
+                    $(
+                    $srule => $actions::$sfn(pred_index, recog),
+                    )*
+                    _ => true,
+                }
+            }
+            )?
+        }
+
+        impl<'input, 'arena, Input, TF>
+            $crate::lexer::LexerRecog<'input, 'arena, TF, BaseLexerType<'input, 'arena, Input, TF>>
+            for $actions
+        where
+            'input: 'arena,
+            Input: $crate::char_stream::CharStream<'input>,
+            TF: $crate::token_factory::TokenFactory<'input, 'arena> + 'arena,
+        {
+            $($($extend)*)?
+
+            fn get_rule_names(&self) -> &'static [&'static str] {
+                &ruleNames
+            }
+
+            fn get_literal_names(&self) -> &[::std::option::Option<&str>] {
+                &_LITERAL_NAMES
+            }
+
+            fn get_symbolic_names(&self) -> &[::std::option::Option<&str>] {
+                &_SYMBOLIC_NAMES
+            }
+
+            fn get_grammar_file_name(&self) -> &'static str {
+                $file
+            }
+
+            fn get_atn_simulator_man(
+                &self,
+            ) -> &'static $crate::atn_simulator::LexerATNSimulatorManager {
+                &ATN_SIMULATOR_MANAGER
+            }
+        }
+    };
 }
