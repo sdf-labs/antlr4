@@ -10,7 +10,9 @@
 // after `a BETWEEN b AND c`, the boolean loop sees AND and must decide
 // iterate (a new boolean operand) vs exit (the AND belongs to an enclosing
 // construct). Statically provable shapes of this conflict resolve in the
-// class tables of the b-loop decision; the rest escape to adaptivePredict.
+// class tables of the b-loop decision; the rest resolve to iterate under
+// a real-stack guard (the guarded-iterate escape) that defers to
+// adaptivePredict exactly when the stack can make the exit reading viable.
 //
 // The grammar also carries 'NOT'? BETWEEN, whose lookahead collides with
 // the prefix 'NOT' b alternative, and '(' b ')' in atoms, which puts
@@ -21,9 +23,9 @@
 // position, so a BETWEEN bound can end with a lambda whose body absorbs
 // 'AND' tokens: in `x BETWEEN y -> a AND b AND c` the first AND belongs
 // to the lambda body and the second is the separator. Which AND is the
-// separator depends on the whole rest of the input, so the b-loop and the
-// predicate decision become hybrid tables that escape to adaptivePredict
-// on exactly these inputs (verified: both engines parse the corners below
+// separator depends on the whole rest of the input, so the b-loop decision
+// guards those states and defers to adaptivePredict on exactly these
+// inputs (verified: both engines parse the corners below
 // identically, resolving maximal-munch like the runtime). DELETE the
 // lambda production and every decision in this grammar is statically
 // k=1 - function calls, IN lists, subscripts and LIKE..ESCAPE suffixes
