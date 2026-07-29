@@ -555,6 +555,30 @@ public class DecisionClassifier {
 	/** The shared-descent plan of the decision being classified. */
 	protected SharedDescentAnalyzer.Plan currentDescentPlan;
 
+	/** The group a mask-accept dispatches through, chosen so the
+	 *  analysis and the generated code agree: the generated arms fire
+	 *  the FIRST codegenable group covering the mask (later groups only
+	 *  when its runtime guards trip), so the mask is accepted exactly
+	 *  when that group passes the first-consumer proof. When no
+	 *  codegenable group covers, any proven group will do - the runtime
+	 *  has no arm to fire and defers to adaptivePredict, which needs no
+	 *  dispatch proof of its own. */
+	protected SharedDescentAnalyzer.Group pickDescentGroup(
+		java.util.List<SharedDescentAnalyzer.Group> covering, Set<ATNConfig> configs,
+		DecisionState s) {
+		boolean anyCodegenable = false;
+		for (SharedDescentAnalyzer.Group cand : covering) {
+			if (!cand.codegenable) continue;
+			anyCodegenable = true;
+			return allStartViaR(configs, s, cand) ? cand : null;
+		}
+		if (anyCodegenable) return null;
+		for (SharedDescentAnalyzer.Group cand : covering) {
+			if (allStartViaR(configs, s, cand)) return cand;
+		}
+		return null;
+	}
+
 	/** Do all live configurations of this state genuinely start via the
 	 *  group's rule (first-consumer proof, prefix-aware)? Configurations
 	 *  of non-member alternatives are exempt: they fall through to the
@@ -1548,10 +1572,13 @@ public class DecisionClassifier {
 							acceptMasks.set(d, altBits(factorGroup.alts));
 						}
 						else {
-							SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
-								&& System.getProperty("antlr.dfa.disableDescentMasks") == null
-								? currentDescentPlan.groupCovering(alts) : null;
-							if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
+							SharedDescentAnalyzer.Group descentGroup = null;
+							if (currentDescentPlan != null
+								&& System.getProperty("antlr.dfa.disableDescentMasks") == null) {
+								descentGroup = pickDescentGroup(
+									currentDescentPlan.groupsCovering(alts), configs, s);
+							}
+							if (descentGroup != null) {
 								res.descentMaskStates++;
 								res.approxConflicts.remove(conflicting);
 								res.contextSensitiveConflicts.remove(conflicting);
@@ -1629,10 +1656,13 @@ public class DecisionClassifier {
 					acceptMasks.set(d, altBits(factorGroup.alts));
 				}
 				else {
-					SharedDescentAnalyzer.Group descentGroup = currentDescentPlan != null
-						&& System.getProperty("antlr.dfa.disableDescentMasks") == null
-						? currentDescentPlan.groupCovering(alts) : null;
-					if (descentGroup != null && allStartViaR(configs, s, descentGroup)) {
+					SharedDescentAnalyzer.Group descentGroup = null;
+					if (currentDescentPlan != null
+						&& System.getProperty("antlr.dfa.disableDescentMasks") == null) {
+						descentGroup = pickDescentGroup(
+							currentDescentPlan.groupsCovering(alts), configs, s);
+					}
+					if (descentGroup != null) {
 						res.descentMaskStates++;
 						acceptMasks.set(d, altBits(alts));
 						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {

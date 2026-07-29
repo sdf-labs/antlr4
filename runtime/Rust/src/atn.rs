@@ -49,6 +49,11 @@ pub struct ATN {
     /// [`crate::static_dfa`].
     pub static_dfas: StaticDFATables,
 
+    /// Real-stack postfix-chase continuation sets for the guarded
+    /// shared-descent dispatch, computed on first use (see
+    /// [`crate::follow_sets`]).
+    follow_sets: std::sync::OnceLock<crate::follow_sets::FollowSets>,
+
     states: Vec<Pin<Box<ATNState>>>,
 }
 
@@ -76,6 +81,7 @@ impl ATN {
             rule_to_stop_state: Vec::new(),
             rule_to_token_type: Vec::new(),
             static_dfas: StaticDFATables::empty(),
+            follow_sets: std::sync::OnceLock::new(),
             states: Vec::new(),
         }
     }
@@ -108,6 +114,11 @@ impl ATN {
     pub(crate) fn add_state(&mut self, state: ATNState) {
         let state_number = state.get_state_number();
         *self.get_state_mut(state_number) = state;
+    }
+
+    /// The invocation-site continuation sets (lazily computed).
+    pub fn follow_sets(&self) -> &crate::follow_sets::FollowSets {
+        crate::follow_sets::FollowSets::of(&self.follow_sets, self)
     }
 
     pub(crate) fn alloc_states(&mut self, count: usize) {
