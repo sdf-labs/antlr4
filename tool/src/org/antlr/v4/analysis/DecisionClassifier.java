@@ -638,6 +638,28 @@ public class DecisionClassifier {
 	 *  analysis: consumption inside this rule is within the dangling-else
 	 *  discipline and never marks {@link #ROOTED_TAINT}). */
 	protected int currentDecisionRule = -1;
+	/** Identity set of context frames born from a phantom re-descent: a
+	 *  rule invocation whose invoking configuration had popped through the
+	 *  wildcard context ({@link #BOUNDARY_TAINT}) or whose stack already
+	 *  contained a widened joint or a phantom-born frame. Such frames
+	 *  hypothesize a fresh descent juxtaposed after the completed rule -
+	 *  a continuation no real stack offers (a completed expression is
+	 *  always followed by a separator, which the unmarked follow-position
+	 *  configurations consume first) - so token obligations attributed to
+	 *  them (see {@link #hasObligatedReturn}) are dead and discharged.
+	 *  Tracked by 64-bit structural (value) key, not identity: equal-value
+	 *  twins of a phantom-born node arise through independent lineages
+	 *  and configuration dedup keeps whichever arrived first.
+	 *  {@link #realFrameKeys} guards the poisoning direction: a value
+	 *  also born by a clean (non-phantom) lineage is never skipped.
+	 *  Both per construction attempt. */
+	protected Set<Long> phantomFrameKeys;
+	/** Structural keys of frames born by clean lineages (no boundary
+	 *  chase, no widened or phantom ancestor); see
+	 *  {@link #phantomFrameKeys}. */
+	protected Set<Long> realFrameKeys;
+	/** Memo for {@link #frameKey} (contexts share structure). */
+	protected Map<PredictionContext, Long> frameKeyCache;
 	/** Lazily built: a rule call's follow state -> the call-site state
 	 *  owning the {@link RuleTransition} (the invoking state a real parse
 	 *  stack carries for that call). */
@@ -1255,6 +1277,9 @@ public class DecisionClassifier {
 		this.faithCache = new java.util.IdentityHashMap<PredictionContext, Boolean>();
 		this.widenedJoints =
 			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<PredictionContext, Boolean>());
+		this.phantomFrameKeys = new HashSet<Long>();
+		this.realFrameKeys = new HashSet<Long>();
+		this.frameKeyCache = new java.util.IdentityHashMap<PredictionContext, Long>();
 		Map<ConfigSetKey, Integer> stateIds = new HashMap<ConfigSetKey, Integer>();
 		List<Set<ATNConfig>> states = new ArrayList<Set<ATNConfig>>();
 		List<List<Integer>> edges = new ArrayList<List<Integer>>();
@@ -2675,6 +2700,19 @@ public class DecisionClassifier {
 					newCtx = SingletonPredictionContext.create(config.context, followStateNumber);
 				}
 				ATNConfig callee = new ATNConfig(config, rt.target, newCtx);
+				if (config.alt == 2 && !newCtx.isEmpty()) {
+					// phantom re-descent birth (see phantomFrameKeys): an
+					// invocation from a wildcard-born lineage hypothesizes a
+					// juxtaposed descent no real stack offers. Alt-2-scoped:
+					// exit-lineage chains only ever carry exit-born frame
+					// values, so clean iterate births of the same value must
+					// not poison the classification.
+					boolean phantomBirth =
+						(config.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
+						|| ctxContainsWildcard(config.context);
+					(phantomBirth ? phantomFrameKeys : realFrameKeys)
+						.add(frameKey(newCtx));
+				}
 				if (widened) {
 					res.usedWidening = true;
 					callee.reachesIntoOuterContext |= WIDENED_TAINT;
@@ -2857,7 +2895,10 @@ public class DecisionClassifier {
 				// a list element of expr (',' expr)* '>>' expr returns to a
 				// position owing ',' or '>>', which has no iterate-side
 				// counterpart - there the runtime can kill iterate with deeper
-				// lookahead and legitimately predict exit.
+				// lookahead and legitimately predict exit. Frames born from a
+				// phantom re-descent ({@link #phantomFrameKeys}) are skipped:
+				// they hypothesize a juxtaposed fresh descent no real stack
+				// offers, so their obligations are dead.
 				if (c.state.ruleIndex == precRuleIndex
 					&& precPendingStates.get(c.state.stateNumber)
 					&& hasPendingPrecReturn(c.context)) {
@@ -2877,11 +2918,68 @@ public class DecisionClassifier {
 		return attest;
 	}
 
+	/** Does the context chain pass through a wildcard artifact - a
+	 *  widened joint ({@link #widenedJoints}) or a phantom-born frame
+	 *  ({@link #phantomFrameKeys})? A frame pushed above such a node is a
+	 *  post-cut hypothesis. Keys poisoned by a clean twin
+	 *  ({@link #realFrameKeys}) still count as wildcard here: the
+	 *  birth-side marking errs toward phantom, and the skip sites apply
+	 *  the clean-twin guard.
+	 */
+	private boolean ctxContainsWildcard(PredictionContext ctx) {
+		if (ctx == null || ctx.isEmpty()) return false;
+		if (widenedJoints.contains(ctx)) return true;
+		for (int i = 0; i < ctx.size(); i++) {
+			if (phantomFrameKeys.contains(
+					slotKey(frameKey(ctx.getParent(i)), ctx.getReturnState(i)))) {
+				return true;
+			}
+			if (ctxContainsWildcard(ctx.getParent(i))) return true;
+		}
+		return false;
+	}
+
+	/** Structural (value) key of a context frame: equal-value twins of a
+	 *  node share a key regardless of which object configuration dedup
+	 *  kept. 64-bit to keep collisions negligible. */
+	private long frameKey(PredictionContext ctx) {
+		if (ctx == null || ctx.isEmpty()) return 0L;
+		Long cached = frameKeyCache.get(ctx);
+		if (cached != null) return cached;
+		long h = 0x9e3779b97f4a7c15L;
+		for (int i = 0; i < ctx.size(); i++) {
+			h = mix(h, frameKey(ctx.getParent(i)), ctx.getReturnState(i));
+		}
+		h = avalanche(h);
+		frameKeyCache.put(ctx, h);
+		return h;
+	}
+
+	/** The frame key of a single-slot context of the given parent key
+	 *  and return state - equals {@link #frameKey} of a singleton of the
+	 *  same shape, so array slots (whose merged node never went through a
+	 *  birth) can be tested against the birth classifications. */
+	private long slotKey(long parentKey, int returnState) {
+		return avalanche(mix(0x9e3779b97f4a7c15L, parentKey, returnState));
+	}
+
+	private static long mix(long h, long parentKey, int returnState) {
+		return h * 0x100000001b3L ^ (parentKey + 31L * (returnState + 1));
+	}
+
+	private static long avalanche(long h) {
+		h ^= h >>> 29;
+		h *= 0xbf58476d1ce4e5b9L;
+		h ^= h >>> 32;
+		return h;
+	}
+
 	private boolean hasPendingPrecReturn(PredictionContext ctx) {
 		if (ctx == null || ctx.isEmpty()) return false;
 		for (int i = 0; i < ctx.size(); i++) {
 			int rs = ctx.getReturnState(i);
-			if (rs != PredictionContext.EMPTY_RETURN_STATE) {
+			if (rs != PredictionContext.EMPTY_RETURN_STATE
+				&& !phantomSlot(frameKey(ctx.getParent(i)), rs)) {
 				ATNState st = atn.states.get(rs);
 				if (st.ruleIndex == precRuleIndex
 					&& precPendingStates.get(rs)) {
@@ -2892,11 +2990,23 @@ public class DecisionClassifier {
 		return false;
 	}
 
+	/** Phantom-born-frame test for the obligation checks: the frame's
+	 *  value was only ever born from a wildcard lineage (a value also
+	 *  born cleanly by the exit lineage - {@link #realFrameKeys} - is
+	 *  never phantom). */
+	private boolean phantomSlot(long parentKey, int returnState) {
+		long k = slotKey(parentKey, returnState);
+		return phantomFrameKeys.contains(k) && !realFrameKeys.contains(k);
+	}
+
 	/**
 	 * Does the context chain contain a same-rule return state with a
-	 * token obligation outside the iteration-start region - a phantom
-	 * frame of the precedence rule that cannot be discharged by iterating
-	 * (see {@link #precPendingStates})?
+	 * token obligation outside the iteration-start region - a frame of
+	 * the precedence rule that cannot be discharged by iterating (see
+	 * {@link #precPendingStates})? Phantom-born frames
+	 * ({@link #phantomContexts}) are skipped: they model a juxtaposed
+	 * re-descent that no real stack can realize, so their obligations
+	 * cannot make the exit side uniquely viable.
 	 */
 	private boolean hasObligatedReturn(PredictionContext ctx, Set<PredictionContext> visited) {
 		if (ctx == null || ctx.isEmpty() || !visited.add(ctx)) return false;
@@ -2904,7 +3014,9 @@ public class DecisionClassifier {
 			int rs = ctx.getReturnState(i);
 			if (rs != PredictionContext.EMPTY_RETURN_STATE) {
 				ATNState st = atn.states.get(rs);
-				if (st.ruleIndex == precRuleIndex
+				boolean phantom = phantomSlot(frameKey(ctx.getParent(i)), rs);
+				if (!phantom
+					&& st.ruleIndex == precRuleIndex
 					&& precPendingStates.get(rs)) {
 					return true;
 				}
