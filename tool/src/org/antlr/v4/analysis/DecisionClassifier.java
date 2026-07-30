@@ -203,6 +203,10 @@ public class DecisionClassifier {
 		 *  guarded-iterate escape found the foreign consumption
 		 *  unreachable on every real stack (empty danger set). */
 		public int iterateAccepts;
+		/** Budget-frontier iterate/exit states of a precedence-class build
+		 *  resolved to iterate by the substitution attestations, no conflict
+		 *  ever materializing (see buildDFA). */
+		public int frontierIterates;
 		/** Conflict states resolved to min(U) by the uniform-widening
 		 *  trust (every context entry has an assured min attestation). */
 		public int utrustResolutions;
@@ -973,6 +977,7 @@ public class DecisionClassifier {
 				res.usedWidening |= attempt.usedWidening;
 				res.guardedIterates += attempt.guardedIterates;
 				res.iterateAccepts += attempt.iterateAccepts;
+				res.frontierIterates += attempt.frontierIterates;
 				if (note.length() > 0) note.append(' ');
 				note.append("p").append(c == 0 ? "<=" + cutoffs[0]
 					: c < cutoffs.length ? "=" + (cutoffs[c-1]+1) + ".." + cutoffs[c]
@@ -1374,45 +1379,10 @@ public class DecisionClassifier {
 				if (precRuleIndex >= 0 && precClassSubstitutable && precSimpleLoop
 					&& conflicting.cardinality() == 2
 					&& conflicting.get(1) && conflicting.get(2)) {
-					boolean exitForeign = false;
-					boolean exitObligated = false;
-					boolean iterateReal = false;
-					for (ATNConfig c : cs) {
-						if (c.alt == 2) {
-							if ((c.reachesIntoOuterContext & FOREIGN_CONSUME_TAINT) != 0) {
-								exitForeign = true;
-							}
-							// Every phantom same-rule frame of the exit
-							// derivation must be free of token obligations
-							// outside the iteration-start region. An
-							// operand-start position owes the operand -
-							// exactly what the iterate reading owes too
-							// (both invoke the same operand next) - UNLESS
-							// its invocation returns into pending tokens of
-							// a compound alternative: the operand of a
-							// simple binary/unary operator returns to the
-							// alternative tail (nothing pending, benign),
-							// but a list element of expr (',' expr)* '>>'
-							// expr returns to a position owing ',' or '>>',
-							// which has no iterate-side counterpart - there
-							// the runtime can kill iterate with deeper
-							// lookahead and legitimately predict exit.
-							if (c.state.ruleIndex == precRuleIndex
-								&& precPendingStates.get(c.state.stateNumber)
-								&& hasPendingPrecReturn(c.context)) {
-								exitObligated = true;
-							}
-							if (hasObligatedReturn(c.context,
-									java.util.Collections.newSetFromMap(
-										new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
-								exitObligated = true;
-							}
-						}
-						if (c.alt == 1 && (c.reachesIntoOuterContext
-								& (WIDENED_TAINT|FOREIGN_CONSUME_TAINT)) == 0) {
-							iterateReal = true;
-						}
-					}
+					int attest = iterateSubstitutionAttestations(cs);
+					boolean exitForeign = (attest & EXIT_FOREIGN) != 0;
+					boolean exitObligated = (attest & EXIT_OBLIGATED) != 0;
+					boolean iterateReal = (attest & ITERATE_REAL) != 0;
 					if (!exitForeign && !exitObligated && iterateReal) {
 						res.exactAmbigConflicts.add(conflicting);
 						acceptAlts.set(d, 1);
@@ -1688,6 +1658,25 @@ public class DecisionClassifier {
 						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
 							System.err.printf("DESCENT-MASK d=%d state=%d rule=%s alts=%s%n",
 								s.decision, d, g.getRule(descentGroup.rule).name, descentGroup.alts);
+						}
+					}
+					else if (precRuleIndex >= 0 && precClassSubstitutable && precSimpleLoop
+						&& alts.cardinality() == 2 && alts.get(1) && alts.get(2)
+						&& iterateSubstitutionAttestations(cs) == ITERATE_REAL) {
+						// Budget-frontier iterate/exit state of a precedence loop:
+						// no conflict materialized before the cutoff, but the
+						// substitution attestations (a lineage property, independent
+						// of any collision) certify that exit can never become
+						// uniquely viable - its scanned tokens were all consumed by
+						// the loop discipline and it owes nothing iterate does not
+						// owe - so the adaptive engine answers iterate whenever it
+						// terminates: unique iterate, or an ambiguity resolved to
+						// the minimum alternative. Resolve without the scan.
+						res.frontierIterates++;
+						acceptAlts.set(d, 1);
+						if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
+							System.err.printf("FRONTIER-ITERATE d=%d state=%d depth=%d%n",
+								s.decision, d, stateDepth.get(d));
 						}
 					}
 					else {
@@ -2834,6 +2823,60 @@ public class DecisionClassifier {
 		return true;
 	}
 
+	/** Iterate/exit substitution attestation bits (see
+	 *  {@link #iterateSubstitutionAttestations}). */
+	protected static final int EXIT_FOREIGN = 1;
+	protected static final int EXIT_OBLIGATED = 2;
+	protected static final int ITERATE_REAL = 4;
+
+	/**
+	 * Iterate/exit substitution attestations of a state's configuration
+	 * set (see the enter/exit substitution in buildDFA): {@link #EXIT_FOREIGN}
+	 * when an exit configuration consumed in a foreign frame,
+	 * {@link #EXIT_OBLIGATED} when an exit lineage owes pending tokens the
+	 * iterate side does not also owe, {@link #ITERATE_REAL} when iterate
+	 * viability is attested by a non-widened, non-foreign configuration.
+	 * The substitution resolves to iterate when the result is exactly
+	 * {@link #ITERATE_REAL}; {@code ITERATE_REAL|EXIT_FOREIGN} admits the
+	 * state to the guarded-iterate escape.
+	 */
+	protected int iterateSubstitutionAttestations(Set<ATNConfig> cs) {
+		int attest = 0;
+		for (ATNConfig c : cs) {
+			if (c.alt == 2) {
+				if ((c.reachesIntoOuterContext & FOREIGN_CONSUME_TAINT) != 0) {
+					attest |= EXIT_FOREIGN;
+				}
+				// Every phantom same-rule frame of the exit derivation must be
+				// free of token obligations outside the iteration-start region.
+				// An operand-start position owes the operand - exactly what the
+				// iterate reading owes too (both invoke the same operand next) -
+				// UNLESS its invocation returns into pending tokens of a compound
+				// alternative: the operand of a simple binary/unary operator
+				// returns to the alternative tail (nothing pending, benign), but
+				// a list element of expr (',' expr)* '>>' expr returns to a
+				// position owing ',' or '>>', which has no iterate-side
+				// counterpart - there the runtime can kill iterate with deeper
+				// lookahead and legitimately predict exit.
+				if (c.state.ruleIndex == precRuleIndex
+					&& precPendingStates.get(c.state.stateNumber)
+					&& hasPendingPrecReturn(c.context)) {
+					attest |= EXIT_OBLIGATED;
+				}
+				if (hasObligatedReturn(c.context,
+						java.util.Collections.newSetFromMap(
+							new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+					attest |= EXIT_OBLIGATED;
+				}
+			}
+			if (c.alt == 1 && (c.reachesIntoOuterContext
+					& (WIDENED_TAINT|FOREIGN_CONSUME_TAINT)) == 0) {
+				attest |= ITERATE_REAL;
+			}
+		}
+		return attest;
+	}
+
 	private boolean hasPendingPrecReturn(PredictionContext ctx) {
 		if (ctx == null || ctx.isEmpty()) return false;
 		for (int i = 0; i < ctx.size(); i++) {
@@ -3441,14 +3484,15 @@ public class DecisionClassifier {
 		if (utrust > 0) {
 			buf.append(String.format("utrust: %d conflict states resolved to min-alt%n", utrust));
 		}
-		int iterGuards = 0, iterAccepts = 0;
+		int iterGuards = 0, iterAccepts = 0, iterFrontier = 0;
 		for (Result r : results) {
 			iterGuards += r.guardedIterates;
 			iterAccepts += r.iterateAccepts;
+			iterFrontier += r.frontierIterates;
 		}
-		if (iterGuards > 0 || iterAccepts > 0) {
-			buf.append(String.format("iterate-guard: %d conflict states guarded, %d resolved outright%n",
-				iterGuards, iterAccepts));
+		if (iterGuards > 0 || iterAccepts > 0 || iterFrontier > 0) {
+			buf.append(String.format("iterate-guard: %d conflict states guarded, %d resolved outright, %d frontier states resolved%n",
+				iterGuards, iterAccepts, iterFrontier));
 		}
 		int descentPlans = 0, descentMasks = 0;
 		for (Result r : results) {
