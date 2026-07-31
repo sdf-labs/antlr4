@@ -114,12 +114,9 @@ impl<'ephemeral> SemanticContext<'ephemeral> {
                     let evaluated = context.eval_precedence(scratch, parser, outer_context);
                     differs |= evaluated.is_some() && context == evaluated.unwrap();
 
-                    if let Some(evaluated) = evaluated {
-                        if *evaluated != Self::NONE {
-                            operands.push(evaluated);
-                        }
-                    } else {
-                        return None;
+                    let evaluated = evaluated?;
+                    if *evaluated != Self::NONE {
+                        operands.push(evaluated);
                     }
                 }
 

@@ -96,8 +96,8 @@ fn gen_expr(rng: &mut Rng, depth: usize, out: &mut String) {
     if depth == 0 || rng.below(4) == 0 {
         // atom
         match rng.below(6) {
-            0 => out.push_str("x"),
-            1 => out.push_str("1"),
+            0 => out.push('x'),
+            1 => out.push('1'),
             2 => out.push_str("as"), // soft keyword as identifier
             3 => out.push_str("a.b"),
             4 => {

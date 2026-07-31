@@ -737,9 +737,8 @@ FactoredTailArm(t, body) ::= <<
 descentMaskPredict(choice, groups) ::= <<
 { let _m = <self()>.base.dfa_predict_mask(<choice.decision>)?;
   match _m {
-    0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? - 1) as u32),
 <groups; separator="\n">
-    x if (x & (x-1)) != 0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? - 1) as u32),
+    x if x == 0 || (x & (x-1)) != 0 => 1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<choice.decision>,&mut <self()>.base)? - 1) as u32),
     m => m,
   } }
 >>
@@ -760,23 +759,23 @@ DescentGroup(g, tails) ::= <<
             Ok(_node) => {
                 if <self()>.base.syntax_error_count() != _neutral_state.2 {
                     <self()>.base.end_neutral_parse(&_neutral_state);
-                    // errorful neutral parse: throw its result away and
+                    <!// errorful neutral parse: throw its result away and
                     // defer (muted, so no spurious reports escaped)
-                    1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)
+!>                    1u64.wrapping_shl((<self()>.get_interpreter().adaptive_predict(<g.decision>,&mut <self()>.base)? - 1) as u32)
                 }
                 else {
-                    // the tail token decides on the post-prefix stream.
+                    <!// the tail token decides on the post-prefix stream.
                     // An explicit arm (or the static default) rewinds into
                     // resume mode; anything else rewinds and defers to the
                     // adaptive engine from the decision start - no resume,
                     // the chosen body re-parses everything
-                    let _tailbit = { let _t = <self()>.input.la(1); match _t {
+!>                    let _tailbit = { let _t = <self()>.input.la(1); match _t {
                         <tails; separator="\n">
                         _ => <if(g.defaultBit)>Some(<g.defaultBit>)<else>None<endif>,
                     } };
                     match _tailbit {
                         Some(bit) => {
-                            <self()>.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_<g.ruleName>);
+                            <self()>.base.start_resume(_node.as_node(), RULE_<g.ruleName>);
                             <self()>.base.end_neutral_parse(&_neutral_state);
                             bit
                         }
@@ -898,8 +897,8 @@ cases(tokens) ::= <<
 <tokens:{t | <parser.grammarName>_<t.name> }; separator="|",wrap>
 >>
 
+// InvokeRule <r.escapedName>
 InvokeRule(r, argExprsChunks) ::= <<
-/*InvokeRule <r.escapedName>*/
 <self()>.base.set_state(<r.stateNumber>);
 <LabelsAssign(r.labels,{<self()>.<r.escapedName><if(r.ast.options.p)>_rec<endif>(<if(r.ast.options.p)><r.ast.options.p><if(argExprsChunks)>,<endif><endif><argExprsChunks>)?})>
 >>
@@ -1194,13 +1193,13 @@ impl\<'input: 'arena, 'arena, Tok: Token + 'input> <struct.escapedName>Ext\<'inp
             let tmp = unsafe { std::ptr::read(base_ctx) };
             <currentRule.name; format="cap">ContextAll::<struct.escapedName>(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
+        <!// replace + forget, NOT assignment: the new value's children Vec
         // was moved out of the old one, so dropping the old value would
         // deallocate the buffer the new value references (the arena can
         // then hand it to another node's Vec - shared-descent resume
         // paths hit this: the decision ctx's Vec buffer is the most
         // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut <currentRule.name; format="cap">ContextAll\<'input, 'arena, Tok\>), ctx);
+        !>let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut <currentRule.name; format="cap">ContextAll\<'input, 'arena, Tok\>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = \<Self as CustomRuleContext\<'input, 'arena, Tok>\>::node_tag();
