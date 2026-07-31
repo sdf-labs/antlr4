@@ -291,7 +291,9 @@ public class ParserFactory extends DefaultOutputModelFactory {
 		}
 		org.antlr.v4.analysis.StaticDFA dfa =
 			g.staticDecisionDFAs != null ? g.staticDecisionDFAs.get(decision) : null;
-		return dfa != null && (dfa.hasEscapes() || dfa.hasMasks());
+		// guarded-take states defer too: the runtime guard punts to
+		// adaptivePredict when the parse stack trips the guard's danger set
+		return dfa != null && (dfa.hasEscapes() || dfa.hasMasks() || dfa.hasGuards());
 	}
 
 	/** Does the decision's emitted table contain a mask-accept covered
