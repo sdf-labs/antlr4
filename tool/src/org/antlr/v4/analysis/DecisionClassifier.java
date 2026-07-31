@@ -291,6 +291,22 @@ public class DecisionClassifier {
 	protected static final int FOREIGN_CONSUME_TAINT = 8;
 
 	/**
+	 * Taint for configurations that consumed a token <em>after</em> popping
+	 * through the decision-entry wildcard context (any consumption by a
+	 * {@link #BOUNDARY_TAINT boundary-popped} lineage, whether inside the
+	 * loop discipline or foreign to it). Distinguishes genuine separated
+	 * continuations from juxtaposition phantoms for the phantom re-descent
+	 * birth classification ({@link #phantomFrameKeys}): a frame invoked by
+	 * a lineage that already consumed a separator models a real
+	 * continuation shape (e.g. the {@code PRIOR} of the self-referential
+	 * base alternative, or the {@code =} of a boolean equality), so its
+	 * token obligations must not be discharged. Assigned above every other
+	 * taint bit so configuration merging (which takes the numeric max)
+	 * never loses it.
+	 */
+	protected static final int CONSUMED_TAINT = 32;
+
+	/**
 	 * Taint for <em>rooted</em> configurations of the optional-postfix
 	 * guard analysis: a skip-lineage (alt 2) configuration that consumed a
 	 * token outside the decision's dangling-else discipline - at an ATN
@@ -2551,6 +2567,11 @@ public class DecisionClassifier {
 					ATNConfig advanced = new ATNConfig(c, moveTargets.get(m));
 					if (precRuleIndex >= 0
 						&& (c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0) {
+						// any consumption by a boundary-popped lineage marks the
+						// descent separated (CONSUMED_TAINT): re-descent frames born
+						// past this point model real separator-led continuations,
+						// not juxtaposition phantoms (see phantomFrameKeys)
+						advanced.reachesIntoOuterContext |= CONSUMED_TAINT;
 						if (isLoopConsumption(c)) {
 							// loop-block consumption by a boundary-popped
 							// config: the phantom consumer is an enclosing
@@ -2733,14 +2754,22 @@ public class DecisionClassifier {
 				ATNConfig callee = new ATNConfig(config, rt.target, newCtx);
 				if (config.alt == 2 && !newCtx.isEmpty()) {
 					// phantom re-descent birth (see phantomFrameKeys): an
-					// invocation from a wildcard-born lineage hypothesizes a
-					// juxtaposed descent no real stack offers. Alt-2-scoped:
-					// exit-lineage chains only ever carry exit-born frame
-					// values, so clean iterate births of the same value must
-					// not poison the classification.
+					// invocation from a wildcard-born lineage that consumed
+					// NOTHING since the pop hypothesizes a juxtaposed descent
+					// no real stack offers. A lineage that already consumed a
+					// separator (CONSUMED_TAINT: the PRIOR of the self-
+					// referential base alternative, the = of a boolean
+					// equality, an argument-list , or () models a real
+					// continuation shape - cov4's CONNECT BY PRIOR B.ID = ...
+					// is parsed through exactly such a frame - so its
+					// obligations stand. Alt-2-scoped: exit-lineage chains
+					// only ever carry exit-born frame values, so clean
+					// iterate births of the same value must not poison the
+					// classification.
 					boolean phantomBirth =
-						(config.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
-						|| ctxContainsWildcard(config.context);
+						(config.reachesIntoOuterContext & CONSUMED_TAINT) == 0
+						&& ((config.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
+							|| ctxContainsWildcard(config.context));
 					(phantomBirth ? phantomFrameKeys : realFrameKeys)
 						.add(frameKey(newCtx));
 				}
