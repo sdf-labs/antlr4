@@ -199,6 +199,14 @@ public class DecisionClassifier {
 		 *  consumption, every foreign exit configuration rooted (see
 		 *  {@link #finalizeGuardedIterates}). */
 		public int guardedIterates;
+		/** Iterate/exit states accepted as GUARDED iterate on obligations
+		 *  of phantom-born frames alone (the runtime stack guard defers
+		 *  when such a frame is on the real stack). */
+		public int guardedObligations;
+		/** Phantom-obligation states resolved to iterate outright: the
+		 *  discharged frames are unreachable on every real stack (empty
+		 *  danger set). */
+		public int obligationAccepts;
 		/** Iterate/exit conflicts resolved to iterate outright: the
 		 *  guarded-iterate escape found the foreign consumption
 		 *  unreachable on every real stack (empty danger set). */
@@ -290,21 +298,6 @@ public class DecisionClassifier {
 	 */
 	protected static final int FOREIGN_CONSUME_TAINT = 8;
 
-	/**
-	 * Taint for configurations that consumed a token <em>after</em> popping
-	 * through the decision-entry wildcard context (any consumption by a
-	 * {@link #BOUNDARY_TAINT boundary-popped} lineage, whether inside the
-	 * loop discipline or foreign to it). Distinguishes genuine separated
-	 * continuations from juxtaposition phantoms for the phantom re-descent
-	 * birth classification ({@link #phantomFrameKeys}): a frame invoked by
-	 * a lineage that already consumed a separator models a real
-	 * continuation shape (e.g. the {@code PRIOR} of the self-referential
-	 * base alternative, or the {@code =} of a boolean equality), so its
-	 * token obligations must not be discharged. Assigned above every other
-	 * taint bit so configuration merging (which takes the numeric max)
-	 * never loses it.
-	 */
-	protected static final int CONSUMED_TAINT = 32;
 
 	/**
 	 * Taint for <em>rooted</em> configurations of the optional-postfix
@@ -505,6 +498,10 @@ public class DecisionClassifier {
 	 * too - and is benign.
 	 */
 	protected java.util.BitSet precPendingStates;
+	/** Pending positions of the precedence rule's base (non-operator)
+	 *  alternatives; guard roots of the guarded-obligation iterate
+	 *  accept. See classifyPrecedence. */
+	protected java.util.BitSet precBasePendingStates;
 
 	/**
 	 * True while building any precedence class in which the enter/exit
@@ -935,6 +932,46 @@ public class DecisionClassifier {
 			}
 		}
 
+		// Pending positions of the rule's BASE alternatives (the operator
+		// alternatives' own pending positions - the dereference DOT family
+		// - are owed by the iterate reading too and are excluded): the
+		// guard roots of the guarded-obligation iterate accept (see
+		// finalizeGuardedIterates). A caller invocation from such a
+		// position owes tokens the loop cannot provide - exactly the
+		// substitution's blind spot (the PRIOR base_ . derefName
+		// alternative's DOT, which the phantom cascade's re-descent may
+		// never reach, yet a real CONNECT BY stack sits on).
+		java.util.BitSet loopAltStates = new java.util.BitSet();
+		Deque<ATNState> altWork0 = new ArrayDeque<ATNState>();
+		for (ATNState st : atn.states) {
+			if (st == null || st.ruleIndex != s.ruleIndex) continue;
+			for (int i = 0; i < st.getNumberOfTransitions(); i++) {
+				Transition t = st.transition(i);
+				if (t instanceof PrecedencePredicateTransition) altWork0.add(t.target);
+			}
+		}
+		while (!altWork0.isEmpty()) {
+			ATNState x = altWork0.remove();
+			if (x.ruleIndex != s.ruleIndex || loopAltStates.get(x.stateNumber)) continue;
+			loopAltStates.set(x.stateNumber);
+			// the loop's local flow ends at the loop end: past it the
+			// transformed rule wraps back to the base-alternative block
+			// (LoopEndState -> block end), which is not loop machinery
+			if (x instanceof LoopEndState || x instanceof RuleStopState) continue;
+			for (int i = 0; i < x.getNumberOfTransitions(); i++) {
+				Transition t = x.transition(i);
+				// stay in the alternative's local control flow: an
+				// invocation returns to its follow state; the callee's
+				// body (notably the rule's own start via an operand
+				// call) is not part of the loop alternative
+				altWork0.add(t instanceof RuleTransition
+					? ((RuleTransition)t).followState : t.target);
+			}
+		}
+		this.precBasePendingStates = new java.util.BitSet();
+		precBasePendingStates.or(precPendingStates);
+		precBasePendingStates.andNot(loopAltStates);
+
 		// Simplicity of the guarded alternatives (see precSimpleLoop):
 		// walk each precedence-guarded alternative's continuation.
 		this.precSimpleLoop = true;
@@ -1014,6 +1051,8 @@ public class DecisionClassifier {
 				res.guardedIterates += attempt.guardedIterates;
 				res.iterateAccepts += attempt.iterateAccepts;
 				res.frontierIterates += attempt.frontierIterates;
+				res.guardedObligations += attempt.guardedObligations;
+				res.obligationAccepts += attempt.obligationAccepts;
 				if (note.length() > 0) note.append(' ');
 				note.append("p").append(c == 0 ? "<=" + cutoffs[0]
 					: c < cutoffs.length ? "=" + (cutoffs[c-1]+1) + ".." + cutoffs[c]
@@ -1305,6 +1344,7 @@ public class DecisionClassifier {
 		List<Set<Integer>> ownRoots = new ArrayList<Set<Integer>>(); // postfix guard roots entering each state
 		Map<Integer, BitSet> guardCandidates = new LinkedHashMap<Integer, BitSet>(); // take-vetoed conflict states -> their conflicting alternatives (null for budget escapes, never conflict-analyzed)
 		Map<Integer, BitSet> guardIterateCandidates = new LinkedHashMap<Integer, BitSet>(); // iterate/exit conflicts vetoed only on foreign consumption -> their conflicting alternatives
+		Set<Integer> guardObligationCandidates = new LinkedHashSet<Integer>(); // iterate/exit states vetoed only by phantom-born obligations (roots in ownRoots)
 		this.currentDecisionRule = s.ruleIndex;
 
 		Set<ATNConfig> start = new LinkedHashSet<ATNConfig>();
@@ -1418,14 +1458,31 @@ public class DecisionClassifier {
 				if (precRuleIndex >= 0 && precClassSubstitutable && precSimpleLoop
 					&& conflicting.cardinality() == 2
 					&& conflicting.get(1) && conflicting.get(2)) {
-					int attest = iterateSubstitutionAttestations(cs);
+					Set<Integer> obRoots = new HashSet<Integer>();
+					int attest = iterateSubstitutionAttestations(cs, obRoots);
 					boolean exitForeign = (attest & EXIT_FOREIGN) != 0;
 					boolean exitObligated = (attest & EXIT_OBLIGATED) != 0;
 					boolean iterateReal = (attest & ITERATE_REAL) != 0;
 					if (!exitForeign && !exitObligated && iterateReal) {
-						res.exactAmbigConflicts.add(conflicting);
-						acceptAlts.set(d, 1);
-						continue;
+						if (obRoots.isEmpty()) {
+							res.exactAmbigConflicts.add(conflicting);
+							acceptAlts.set(d, 1);
+							continue;
+						}
+						if (hybridMode) {
+							// vetoed only by obligations of phantom-born
+							// frames: a candidate for the guarded-obligation
+							// iterate accept (resolved after construction,
+							// once guard roots have propagated)
+							acceptAlts.set(d, StaticDFA.ESCAPE);
+							if (ownRoots.get(d) == null) ownRoots.set(d, new HashSet<Integer>(obRoots));
+							else ownRoots.get(d).addAll(obRoots);
+							guardObligationCandidates.add(d);
+							res.exactAmbigConflicts.add(conflicting);
+							continue;
+						}
+						// full-table attempts cannot guard: the phantom
+						// obligations veto (fall through to escape)
 					}
 					if ("veto".equals(System.getProperty("antlr.dfa.debug"))) {
 						System.err.printf("SUBST-VETO d=%d state=%d foreign=%s obligated=%s iterateReal=%s%n",
@@ -1450,7 +1507,10 @@ public class DecisionClassifier {
 						// vetoed only by foreign consumption of the exit
 						// lineage: a candidate for the guarded-iterate escape
 						// (resolved after construction, once guard roots have
-						// propagated)
+						// propagated); phantom obligations join the guard's
+						// root set
+						if (ownRoots.get(d) == null) ownRoots.set(d, new HashSet<Integer>(obRoots));
+						else ownRoots.get(d).addAll(obRoots);
 						guardIterateCandidates.put(d, conflicting);
 					}
 				}
@@ -1712,22 +1772,42 @@ public class DecisionClassifier {
 						}
 					}
 					else if (precRuleIndex >= 0 && precClassSubstitutable && precSimpleLoop
-						&& alts.cardinality() == 2 && alts.get(1) && alts.get(2)
-						&& iterateSubstitutionAttestations(cs) == ITERATE_REAL) {
-						// Budget-frontier iterate/exit state of a precedence loop:
-						// no conflict materialized before the cutoff, but the
-						// substitution attestations (a lineage property, independent
-						// of any collision) certify that exit can never become
-						// uniquely viable - its scanned tokens were all consumed by
-						// the loop discipline and it owes nothing iterate does not
-						// owe - so the adaptive engine answers iterate whenever it
-						// terminates: unique iterate, or an ambiguity resolved to
-						// the minimum alternative. Resolve without the scan.
-						res.frontierIterates++;
-						acceptAlts.set(d, 1);
-						if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
-							System.err.printf("FRONTIER-ITERATE d=%d state=%d depth=%d%n",
-								s.decision, d, stateDepth.get(d));
+						&& alts.cardinality() == 2 && alts.get(1) && alts.get(2)) {
+						Set<Integer> obRoots = new HashSet<Integer>();
+						int frontierAttest = iterateSubstitutionAttestations(cs, obRoots);
+						if (frontierAttest == ITERATE_REAL && obRoots.isEmpty()) {
+							// Budget-frontier iterate/exit state of a precedence loop:
+							// no conflict materialized before the cutoff, but the
+							// substitution attestations (a lineage property, independent
+							// of any collision) certify that exit can never become
+							// uniquely viable - its scanned tokens were all consumed by
+							// the loop discipline and it owes nothing iterate does not
+							// owe - so the adaptive engine answers iterate whenever it
+							// terminates: unique iterate, or an ambiguity resolved to
+							// the minimum alternative. Resolve without the scan.
+							res.frontierIterates++;
+							acceptAlts.set(d, 1);
+							if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
+								System.err.printf("FRONTIER-ITERATE d=%d state=%d depth=%d%n",
+									s.decision, d, stateDepth.get(d));
+							}
+						}
+						else if (frontierAttest == ITERATE_REAL) {
+							// Same, but with obligations of phantom-born
+							// frames: a guarded-obligation candidate (the
+							// runtime guard defers when such a frame is on
+							// the real stack)
+							acceptAlts.set(d, StaticDFA.ESCAPE);
+							if (ownRoots.get(d) == null) ownRoots.set(d, new HashSet<Integer>(obRoots));
+							else ownRoots.get(d).addAll(obRoots);
+							guardObligationCandidates.add(d);
+							if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
+								System.err.printf("FRONTIER-GUARD-OBLIGATION d=%d state=%d depth=%d roots=%s%n",
+									s.decision, d, stateDepth.get(d), new TreeSet<Integer>(obRoots));
+							}
+						}
+						else {
+							acceptAlts.set(d, StaticDFA.ESCAPE);
 						}
 					}
 					else {
@@ -1844,11 +1924,12 @@ public class DecisionClassifier {
 				ownRoots, guardCandidates, guardAlts, res);
 		}
 		if (guard == null && hybridMode && currentPostfixShape == null
-			&& !guardIterateCandidates.isEmpty() && !overflow && !res.sawPredicate) {
+			&& (!guardIterateCandidates.isEmpty() || !guardObligationCandidates.isEmpty())
+			&& !overflow && !res.sawPredicate) {
 			// iterate/exit conflicts vetoed only on foreign consumption get
 			// a second chance: the guarded-iterate escape
 			guard = finalizeGuardedIterates(s, states, edges, acceptAlts, acceptMasks,
-				ownRoots, guardIterateCandidates, guardAlts, res);
+				ownRoots, guardIterateCandidates, guardObligationCandidates, guardAlts, res);
 		}
 
 		if ("states".equals(System.getProperty("antlr.dfa.debug"))
@@ -2055,12 +2136,40 @@ public class DecisionClassifier {
 											List<Long> acceptMasks,
 											List<Set<Integer>> ownRoots,
 											Map<Integer, BitSet> guardIterateCandidates,
+											Set<Integer> guardObligationCandidates,
 											List<Integer> guardAlts,
 											Result res) {
 		List<Set<Integer>> through = propagateGuardRoots(states, edges, ownRoots);
 
 		Set<Integer> G = new HashSet<Integer>();
 		List<Integer> guarded = new ArrayList<Integer>();
+		for (int d : guardObligationCandidates) {
+			if (acceptAlts.get(d) != StaticDFA.ESCAPE || acceptMasks.get(d) != 0) continue;
+			// eligibility was established at the candidate site (iterate
+			// viability attested, no foreign consumption, no real
+			// obligation). The guard's roots are uniform: every pending
+			// position of the rule's base alternatives - the phantom
+			// descent that would model the caller owing those tokens may
+			// never reach this conflict's context set (cov4's PRIOR base_
+			// frame), but the runtime stack either sits on such an
+			// invocation or it does not.
+			Set<Integer> roots = new HashSet<Integer>();
+			if (through.get(d) != null) roots.addAll(through.get(d));
+			for (int i = precBasePendingStates.nextSetBit(0); i >= 0;
+				 i = precBasePendingStates.nextSetBit(i+1)) {
+				roots.add(i);
+			}
+			if (roots.isEmpty()) continue;
+			acceptAlts.set(d, StaticDFA.GUARDED);
+			guardAlts.set(d, 1);
+			guarded.add(d);
+			G.addAll(roots);
+			res.guardedObligations++;
+			if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
+				System.err.printf("GUARD-OBLIGATION d=%d state=%d roots=%s%n",
+					s.decision, d, new TreeSet<Integer>(roots));
+			}
+		}
 		for (Map.Entry<Integer, BitSet> cand : guardIterateCandidates.entrySet()) {
 			int d = cand.getKey();
 			if (acceptAlts.get(d) != StaticDFA.ESCAPE || acceptMasks.get(d) != 0) continue;
@@ -2117,7 +2226,8 @@ public class DecisionClassifier {
 				for (int d : guarded) {
 					acceptAlts.set(d, StaticDFA.ESCAPE);
 					guardAlts.set(d, 0);
-					res.guardedIterates--;
+					if (guardObligationCandidates.contains(d)) res.guardedObligations--;
+					else res.guardedIterates--;
 				}
 				return null;
 			}
@@ -2132,8 +2242,14 @@ public class DecisionClassifier {
 			for (int d : guarded) {
 				acceptAlts.set(d, 1);
 				guardAlts.set(d, 0);
-				res.guardedIterates--;
-				res.iterateAccepts++;
+				if (guardObligationCandidates.contains(d)) {
+					res.guardedObligations--;
+					res.obligationAccepts++;
+				}
+				else {
+					res.guardedIterates--;
+					res.iterateAccepts++;
+				}
 			}
 			if ("guard".equals(System.getProperty("antlr.dfa.debug"))) {
 				System.err.printf("GUARD-ITERATE-STATIC d=%d states=%s%n",
@@ -2567,11 +2683,6 @@ public class DecisionClassifier {
 					ATNConfig advanced = new ATNConfig(c, moveTargets.get(m));
 					if (precRuleIndex >= 0
 						&& (c.reachesIntoOuterContext & BOUNDARY_TAINT) != 0) {
-						// any consumption by a boundary-popped lineage marks the
-						// descent separated (CONSUMED_TAINT): re-descent frames born
-						// past this point model real separator-led continuations,
-						// not juxtaposition phantoms (see phantomFrameKeys)
-						advanced.reachesIntoOuterContext |= CONSUMED_TAINT;
 						if (isLoopConsumption(c)) {
 							// loop-block consumption by a boundary-popped
 							// config: the phantom consumer is an enclosing
@@ -2754,22 +2865,18 @@ public class DecisionClassifier {
 				ATNConfig callee = new ATNConfig(config, rt.target, newCtx);
 				if (config.alt == 2 && !newCtx.isEmpty()) {
 					// phantom re-descent birth (see phantomFrameKeys): an
-					// invocation from a wildcard-born lineage that consumed
-					// NOTHING since the pop hypothesizes a juxtaposed descent
-					// no real stack offers. A lineage that already consumed a
-					// separator (CONSUMED_TAINT: the PRIOR of the self-
-					// referential base alternative, the = of a boolean
-					// equality, an argument-list , or () models a real
-					// continuation shape - cov4's CONNECT BY PRIOR B.ID = ...
-					// is parsed through exactly such a frame - so its
-					// obligations stand. Alt-2-scoped: exit-lineage chains
-					// only ever carry exit-born frame values, so clean
-					// iterate births of the same value must not poison the
-					// classification.
+					// invocation from a wildcard-born lineage hypothesizes a
+					// juxtaposed descent the analysis cannot prove a real
+					// stack offers. Its token obligations are not discharged
+					// statically, though: they become guard roots and the
+					// iterate accept defers to the adaptive engine when the
+					// frame is on the real stack (see finalizeGuardedIterates).
+					// Alt-2-scoped: exit-lineage chains only ever carry
+					// exit-born frame values, so clean iterate births of the
+					// same value must not poison the classification.
 					boolean phantomBirth =
-						(config.reachesIntoOuterContext & CONSUMED_TAINT) == 0
-						&& ((config.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
-							|| ctxContainsWildcard(config.context));
+						(config.reachesIntoOuterContext & BOUNDARY_TAINT) != 0
+						|| ctxContainsWildcard(config.context);
 					(phantomBirth ? phantomFrameKeys : realFrameKeys)
 						.add(frameKey(newCtx));
 				}
@@ -2938,7 +3045,8 @@ public class DecisionClassifier {
 	 * {@link #ITERATE_REAL}; {@code ITERATE_REAL|EXIT_FOREIGN} admits the
 	 * state to the guarded-iterate escape.
 	 */
-	protected int iterateSubstitutionAttestations(Set<ATNConfig> cs) {
+	protected int iterateSubstitutionAttestations(Set<ATNConfig> cs,
+												  Set<Integer> phantomObRoots) {
 		int attest = 0;
 		for (ATNConfig c : cs) {
 			if (c.alt == 2) {
@@ -2956,17 +3064,19 @@ public class DecisionClassifier {
 				// position owing ',' or '>>', which has no iterate-side
 				// counterpart - there the runtime can kill iterate with deeper
 				// lookahead and legitimately predict exit. Frames born from a
-				// phantom re-descent ({@link #phantomFrameKeys}) are skipped:
-				// they hypothesize a juxtaposed fresh descent no real stack
-				// offers, so their obligations are dead.
+				// phantom re-descent ({@link #phantomFrameKeys}) are no static
+				// veto: their obligations are collected as guard roots and the
+				// iterate accept defers when such a frame is on the real
+				// stack (see finalizeGuardedIterates).
 				if (c.state.ruleIndex == precRuleIndex
 					&& precPendingStates.get(c.state.stateNumber)
-					&& hasPendingPrecReturn(c.context)) {
+					&& hasPendingPrecReturn(c.context, phantomObRoots)) {
 					attest |= EXIT_OBLIGATED;
 				}
 				if (hasObligatedReturn(c.context,
 						java.util.Collections.newSetFromMap(
-							new java.util.IdentityHashMap<PredictionContext, Boolean>()))) {
+							new java.util.IdentityHashMap<PredictionContext, Boolean>()),
+						phantomObRoots)) {
 					attest |= EXIT_OBLIGATED;
 				}
 			}
@@ -3034,16 +3144,25 @@ public class DecisionClassifier {
 		return h;
 	}
 
-	private boolean hasPendingPrecReturn(PredictionContext ctx) {
+	/** Is there a pending same-rule return in the context that is NOT
+	 *  phantom-born? Phantom-born obligation slots are collected into
+	 *  {@code phantomRoots} (nullable) as guard roots instead of being
+	 *  discharged outright: the runtime stack guard defers the iterate
+	 *  accept exactly when a discharged frame is on the real stack. */
+	private boolean hasPendingPrecReturn(PredictionContext ctx, Set<Integer> phantomRoots) {
 		if (ctx == null || ctx.isEmpty()) return false;
 		for (int i = 0; i < ctx.size(); i++) {
 			int rs = ctx.getReturnState(i);
-			if (rs != PredictionContext.EMPTY_RETURN_STATE
-				&& !phantomSlot(frameKey(ctx.getParent(i)), rs)) {
+			if (rs != PredictionContext.EMPTY_RETURN_STATE) {
 				ATNState st = atn.states.get(rs);
 				if (st.ruleIndex == precRuleIndex
 					&& precPendingStates.get(rs)) {
-					return true;
+					if (phantomSlot(frameKey(ctx.getParent(i)), rs)) {
+						if (phantomRoots != null) phantomRoots.add(rs);
+					}
+					else {
+						return true;
+					}
 				}
 			}
 		}
@@ -3064,23 +3183,32 @@ public class DecisionClassifier {
 	 * token obligation outside the iteration-start region - a frame of
 	 * the precedence rule that cannot be discharged by iterating (see
 	 * {@link #precPendingStates})? Phantom-born frames
-	 * ({@link #phantomContexts}) are skipped: they model a juxtaposed
-	 * re-descent that no real stack can realize, so their obligations
-	 * cannot make the exit side uniquely viable.
+	 * ({@link #phantomFrameKeys}) are no static veto either: their
+	 * realizability is stack-dependent, so they are collected as guard
+	 * roots ({@code phantomRoots}) and the iterate accept defers to the
+	 * adaptive engine exactly when such a frame is on the real parse
+	 * stack.
 	 */
-	private boolean hasObligatedReturn(PredictionContext ctx, Set<PredictionContext> visited) {
+	private boolean hasObligatedReturn(PredictionContext ctx, Set<PredictionContext> visited,
+									   Set<Integer> phantomRoots) {
 		if (ctx == null || ctx.isEmpty() || !visited.add(ctx)) return false;
 		for (int i = 0; i < ctx.size(); i++) {
 			int rs = ctx.getReturnState(i);
 			if (rs != PredictionContext.EMPTY_RETURN_STATE) {
 				ATNState st = atn.states.get(rs);
-				boolean phantom = phantomSlot(frameKey(ctx.getParent(i)), rs);
-				if (!phantom
-					&& st.ruleIndex == precRuleIndex
+				if (st.ruleIndex == precRuleIndex
 					&& precPendingStates.get(rs)) {
-					return true;
+					if (phantomSlot(frameKey(ctx.getParent(i)), rs)) {
+						// phantom-born frame: dischargeable obligation,
+						// realized only when the frame is on the real
+						// stack - a guard root, not a static veto
+						if (phantomRoots != null) phantomRoots.add(rs);
+					}
+					else {
+						return true;
+					}
 				}
-				if (hasObligatedReturn(ctx.getParent(i), visited)) return true;
+				if (hasObligatedReturn(ctx.getParent(i), visited, phantomRoots)) return true;
 			}
 		}
 		return false;
@@ -3656,15 +3784,17 @@ public class DecisionClassifier {
 		if (utrust > 0) {
 			buf.append(String.format("utrust: %d conflict states resolved to min-alt%n", utrust));
 		}
-		int iterGuards = 0, iterAccepts = 0, iterFrontier = 0;
+		int iterGuards = 0, iterAccepts = 0, iterFrontier = 0, obGuards = 0, obAccepts = 0;
 		for (Result r : results) {
 			iterGuards += r.guardedIterates;
 			iterAccepts += r.iterateAccepts;
 			iterFrontier += r.frontierIterates;
+			obGuards += r.guardedObligations;
+			obAccepts += r.obligationAccepts;
 		}
-		if (iterGuards > 0 || iterAccepts > 0 || iterFrontier > 0) {
-			buf.append(String.format("iterate-guard: %d conflict states guarded, %d resolved outright, %d frontier states resolved%n",
-				iterGuards, iterAccepts, iterFrontier));
+		if (iterGuards > 0 || iterAccepts > 0 || iterFrontier > 0 || obGuards > 0 || obAccepts > 0) {
+			buf.append(String.format("iterate-guard: %d conflict states guarded, %d resolved outright, %d frontier states resolved, %d obligation states guarded, %d resolved outright%n",
+				iterGuards, iterAccepts, iterFrontier, obGuards, obAccepts));
 		}
 		int descentPlans = 0, descentMasks = 0;
 		for (Result r : results) {
