@@ -1551,7 +1551,19 @@ public class DecisionClassifier {
 					acceptAlts.set(d, conflicting.nextSetBit(0));
 				}
 				else {
-					int um = utrustMinAlt(cs, conflicting, anyBoundary, allBoundary);
+					// Never resolve a start-state (depth 0) conflict: a min-alt
+					// accept there answers the decision without consuming a single
+					// token, but the runtime never reports a conflict before
+					// consuming input either - alt-viability pruning comes first,
+					// so min(U) is the runtime's answer only for inputs that
+					// actually reach the conflict. The depth-0 collision is a
+					// widening artifact of the shared closure (both alts' configs
+					// meet on (state, $) inside the common prefix before any input
+					// disambiguates them; Snowflake property d=387 resolved
+					// 'K = <string>' to nestedProperty, which then failed
+					// expecting '('). Leave it to escape to adaptivePredict.
+					int um = stateDepth.get(d) > 0
+						? utrustMinAlt(cs, conflicting, anyBoundary, allBoundary) : 0;
 					if (um > 0) {
 						// uniform-widening trust: min(U) is the runtime's
 						// answer on every real stack (see utrustMinAlt)
