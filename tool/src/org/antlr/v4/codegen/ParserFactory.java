@@ -210,6 +210,10 @@ public class ParserFactory extends DefaultOutputModelFactory {
 				g.staticDescentPlans != null ? g.staticDescentPlans.get(decision) : null;
 			org.antlr.v4.codegen.model.DescentAltBlock descentBlock =
 				descentPlan != null && gen.getTarget().supportsFactoredAltMask()
+					// the descent arms dispatch on u64 alt masks: decisions
+					// with more than 64 alternatives use the plain block (the
+					// over-64 accepts of its table escape anyway)
+					&& ((DecisionState)blkAST.atnState).getNumberOfTransitions() <= 64
 					&& org.antlr.v4.analysis.SharedDescentAnalyzer.hasDescentMask(g, decision)
 					? buildDescentAltBlock(dfaBlock, descentPlan) : null;
 			if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
