@@ -36,18 +36,15 @@ impl<'a> Decoder<'a> {
     fn next_byte(&mut self) -> Option<u8> {
         while self.bits < 8 {
             let c = loop {
-                match self.segments.get(self.segment) {
-                    None => return None,
-                    Some(segment) => match segment.as_bytes().get(self.at) {
-                        None => {
-                            self.segment += 1;
-                            self.at = 0;
-                        }
-                        Some(&c) => {
-                            self.at += 1;
-                            break c;
-                        }
-                    },
+                match self.segments.get(self.segment)?.as_bytes().get(self.at) {
+                    None => {
+                        self.segment += 1;
+                        self.at = 0;
+                    }
+                    Some(&c) => {
+                        self.at += 1;
+                        break c;
+                    }
                 }
             };
             let v = match c {

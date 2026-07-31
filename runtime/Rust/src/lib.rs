@@ -91,11 +91,11 @@ pub mod atn;
 pub mod atn_config_set;
 #[doc(hidden)]
 pub mod atn_deserializer;
-pub mod follow_sets;
 pub mod common_token_stream;
 pub mod error_listener;
 pub mod error_strategy;
 pub mod errors;
+pub mod follow_sets;
 pub mod input_stream;
 pub mod lexer;
 #[doc(hidden)]
@@ -112,9 +112,9 @@ mod utils;
 //pub mod tokenstream_rewriter_test;
 mod atn_type;
 // mod context_factory;
+pub mod prelude;
 pub mod rule_context;
 pub mod vocabulary;
-pub mod prelude;
 
 // ======= Re-exports ========
 #[cfg(feature = "stacker")]

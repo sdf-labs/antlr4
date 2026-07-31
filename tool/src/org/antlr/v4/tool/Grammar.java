@@ -93,8 +93,14 @@ public class Grammar implements AttributeResolver {
 	}
 
 	public static final Set<String> parseRuleOptions = new HashSet<>();
+    static {
+        parseRuleOptions.add("logical");
+    }
 
 	public static final Set<String> parserBlockOptions = new HashSet<String>();
+    static {
+        parseRuleOptions.add("logical");
+    }
 
 	public static final Set<String> lexerBlockOptions = new HashSet<String>();
 

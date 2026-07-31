@@ -26,7 +26,6 @@
 use std::sync::OnceLock;
 
 use crate::atn::ATN;
-use crate::token::TOKEN_EPSILON;
 use crate::transition::TransitionType;
 
 /// Per invocation-site continuation sets (see module docs). Indexed by
@@ -82,7 +81,9 @@ impl FollowSets {
                             if let Some(label) = tr.get_label() {
                                 for iv in label {
                                     for tok in iv.a..=iv.b.min(max_token) {
-                                        if tok >= crate::token::TOKEN_MIN_USER_TOKEN_TYPE && set_bit(acc, tok) {
+                                        if tok >= crate::token::TOKEN_MIN_USER_TOKEN_TYPE
+                                            && set_bit(acc, tok)
+                                        {
                                             changed = true;
                                         }
                                     }
@@ -168,7 +169,10 @@ impl FollowSets {
                 }
             }
         }
-        FollowSets { first: site_first, nullable: site_nullable }
+        FollowSets {
+            first: site_first,
+            nullable: site_nullable,
+        }
     }
 
     /// Does the continuation after the invocation at call-site `state`

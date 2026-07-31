@@ -139,15 +139,15 @@ fn test_exact_ambiguity_min_alt() {
 fn test_no_viable_alt_handling() {
     // 'create foo' - fails inside the LL(2) DFA at depth 2
     let r = parse("create foo", "stat");
-    match r {
-        Ok(tree) => assert!(tree.contains("create")), // recovered parse
-        Err(_) => {}                                  // unrecoverable is fine too
+    if let Ok(tree) = r {
+        assert!(tree.contains("create")); // recovered parse
     }
+    // unrecoverable is fine too
+
     // dotted name that ends at a dot: cyclic DFA hits EOF mid-scan
     let r = parse("aa.bb.", "expr");
-    match r {
-        Ok(tree) => assert!(tree.contains("aa")),
-        Err(_) => {}
+    if let Ok(tree) = r {
+        assert!(tree.contains("aa"))
     }
 }
 

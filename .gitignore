@@ -15,6 +15,7 @@ build/
 dist/
 lib/
 user.build.properties
+.factorypath
 
 # MacOSX files
 .DS_Store
