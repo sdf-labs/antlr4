@@ -859,6 +859,13 @@ where
                 return Ok(mask);
             }
             if alt > 0 {
+                if alt > 64 {
+                    // the mask encoding cannot represent alternatives
+                    // above 64: the tool never emits tables for such
+                    // decisions, but a stale table defers rather than
+                    // overflowing the shift
+                    return Ok(0);
+                }
                 return Ok(1u64 << (alt - 1));
             }
             let t = self.input.la(i);
@@ -874,6 +881,11 @@ where
                     // mismatch point - mirroring adaptive_predict's
                     // finished-decision-entry-rule recovery.
                     if let Some(alt) = dfa.fallback(s) {
+                        if alt > 64 {
+                            // see the accept path above: stale-table
+                            // defense, never emitted by the tool
+                            return Ok(0);
+                        }
                         return Ok(1u64 << (alt - 1));
                     }
                     let start = self.input.lt(1).map(|t| OwningToken::from(t as &dyn Token));

@@ -700,7 +700,6 @@ public class DecisionClassifier {
 			res.k = 1;
 			return res;
 		}
-
 		// alt-mask dry run: compute the prefix-factor plan up front; the
 		// construction attempts count the states it would resolve.
 		this.currentFactorPlan = factorAnalyzer.analyze(s);
@@ -810,7 +809,6 @@ public class DecisionClassifier {
 	protected Result classifyPrecedence(DecisionState s) {
 		Result res = new Result(s);
 		res.category = Category.LR_PRECEDENCE;
-
 		// distinct guard constants of this rule's operator alternatives
 		TreeSet<Integer> cutSet = new TreeSet<Integer>();
 		for (ATNState st : atn.states) {
@@ -1591,7 +1589,7 @@ public class DecisionClassifier {
 						// prefix-factor group, in which case it accepts
 						// with the group's alternative mask (the parser
 						// resolves the choice at the tail decision)
-						if (factorGroup != null) {
+						if (factorGroup != null && factorGroup.alts.length() <= 64) {
 							res.factorEscapesCured++;
 							res.approxConflicts.remove(conflicting);
 							res.contextSensitiveConflicts.remove(conflicting);
@@ -1605,7 +1603,7 @@ public class DecisionClassifier {
 								descentGroup = pickDescentGroup(
 									currentDescentPlan.groupsCovering(alts), configs, s);
 							}
-							if (descentGroup != null) {
+							if (descentGroup != null && alts.length() <= 64) {
 								res.descentMaskStates++;
 								res.approxConflicts.remove(conflicting);
 								res.contextSensitiveConflicts.remove(conflicting);
@@ -1678,7 +1676,7 @@ public class DecisionClassifier {
 				// first rank (bounded by the token alphabet) must not starve
 				// its own siblings, or single-token predictions - the
 				// dynamic majority - escape on sheer decision fanout.
-				if (factorGroup != null) {
+				if (factorGroup != null && factorGroup.alts.length() <= 64) {
 					res.factorEscapesCured++;
 					acceptMasks.set(d, altBits(factorGroup.alts));
 				}
@@ -1689,7 +1687,7 @@ public class DecisionClassifier {
 						descentGroup = pickDescentGroup(
 							currentDescentPlan.groupsCovering(alts), configs, s);
 					}
-					if (descentGroup != null) {
+					if (descentGroup != null && alts.length() <= 64) {
 						res.descentMaskStates++;
 						acceptMasks.set(d, altBits(alts));
 						if ("descent".equals(System.getProperty("antlr.dfa.debug"))) {
@@ -1797,6 +1795,27 @@ public class DecisionClassifier {
 
 		boolean cyclic = isCyclic(edges);
 		if (!cyclic) res.k = longestPath(edges);
+
+		// The mask protocol encodes alternatives as bits of a u64
+		// (1<<(alt-1) per alt): alternatives above 64 are unrepresentable
+		// (Redshift's 80-alt statement decision - CREATE LIBRARY is alt
+		// 68 - overflowed the walker's accept shift). Over-64 accepts
+		// become escapes in hybrid mode, deferring exactly those inputs
+		// to adaptivePredict; in a full-table attempt they fail the
+		// construction, which then retries in hybrid mode. Mask accepts
+		// are excluded at their sites (hybrid mode only); fallbacks are
+		// error-path hints and are simply dropped.
+		for (int d = 0; d < acceptAlts.size(); d++) {
+			if (acceptAlts.get(d) > 64) {
+				if (!hybridMode) {
+					res.numDfaStates = states.size();
+					res.category = Category.CONTEXT_SENSITIVE;
+					return false;
+				}
+				acceptAlts.set(d, StaticDFA.ESCAPE);
+			}
+			if (fallbackAlts.get(d) > 64) fallbackAlts.set(d, 0);
+		}
 
 		// Take-vetoed conflict states get a second chance: the
 		// guarded-take escape (see finalizeGuardedTakes).
