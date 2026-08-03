@@ -2,18 +2,28 @@
 
 ## What this repo is
 
-This is **sdf-labs/antlr4** (`origin`), a **fork of antlr/antlr4** (`upstream`) maintained
-for [dbt-fusion](https://github.com/dbt-labs/dbt-fusion). The fork's reason for existing is
-the **Rust target**: the Rust runtime crate (`runtime/Rust`, published as `dbt-antlr4`) and
-its tool codegen. Most upstream targets (Java, C++, Go, etc.) are inherited and rarely
-touched here — nearly all fork work happens in `runtime/Rust` and the tool's Rust codegen.
+This is **sdf-labs/antlr4** (`origin`), a **fork of antlr/antlr4**
+(`upstream`) maintained for
+[dbt-fusion](https://github.com/dbt-labs/dbt-core). The fork's reason for
+existing is the **Rust target**: the Rust runtime crate (`runtime/Rust`,
+published as `dbt-antlr4`) and its tool codegen. Other runtime targets
+(Java, C++, Go, etc.) are inherited and kept here for reference only —
+nearly all fork work happens in `runtime/Rust` and the tool's Rust codegen.
 
 Two version numbers, kept in lockstep since 2.0.0 but set in different places:
-- Tool/Java/Maven version: `pom.xml` `2.0.0` (the shaded tool jar is named
+- Tool/Java/Maven version: `pom.xml` `2.0.2` (the shaded tool jar is named
   `dbt-antlr4-<version>-complete.jar` via `shadedArtifactId` in `tool/pom.xml`;
   the Maven coordinate remains `org.antlr:antlr4`)
-- Rust runtime crate version: `runtime/Rust/Cargo.toml` (`dbt-antlr4`, `2.0.0`)
+- Rust runtime crate version: `runtime/Rust/Cargo.toml` (`dbt-antlr4`, `2.0.2`)
 
+### Upstream feature compatibility
+
+- Version 1.x.y maintains full compliance with upstream Antlr features
+- Since version 2, we no longer maintain strict adherence to upstream Antlr.
+  Most notably, 2.0.0 introduced `-Xstatic-dfa` option (Rust runtime only),
+  which enables additional static analysis at codegen time to generate
+  optimized code paths that avoids the overhead a full runtime
+  `adaptivePredict`
 
 ## Build (Maven, builds the tool that generates parsers)
 
@@ -34,7 +44,7 @@ The Rust runtime is a Cargo crate, **not** part of the Maven build. To work on i
 ```bash
 cd runtime/Rust
 cargo build
-cargo test          # runs tests against the checked-in generated parsers in tests/gen/
+cargo test --all-features       # runs tests against the checked-in generated parsers in tests/gen/
 ```
 
 Cargo features (off by default): `recursion-limit`, `arena-allocation-limit` — these gate
