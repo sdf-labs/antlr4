@@ -11,10 +11,10 @@ published as `dbt-antlr4`) and its tool codegen. Other runtime targets
 nearly all fork work happens in `runtime/Rust` and the tool's Rust codegen.
 
 Two version numbers, kept in lockstep since 2.0.0 but set in different places:
-- Tool/Java/Maven version: `pom.xml` `2.0.2` (the shaded tool jar is named
+- Tool/Java/Maven version: `pom.xml` `2.0.3` (the shaded tool jar is named
   `dbt-antlr4-<version>-complete.jar` via `shadedArtifactId` in `tool/pom.xml`;
   the Maven coordinate remains `org.antlr:antlr4`)
-- Rust runtime crate version: `runtime/Rust/Cargo.toml` (`dbt-antlr4`, `2.0.2`)
+- Rust runtime crate version: `runtime/Rust/Cargo.toml` (`dbt-antlr4`, `2.0.3`)
 
 ### Upstream feature compatibility
 
@@ -62,7 +62,7 @@ mvn install -DskipTests
 cd runtime/Rust && ./gen_test_grammars.sh
 ```
 
-`gen_test_grammars.sh` has `TOOL_VERSION="2.0.0"` hardcoded and reads
+`gen_test_grammars.sh` has `TOOL_VERSION="2.0.3"` hardcoded and reads
 `tool/target/dbt-antlr4-${TOOL_VERSION}-complete.jar`. Keep it in sync with `pom.xml`.
 
 ### Single source of truth for the Rust codegen template
