@@ -13,6 +13,7 @@ use crate::errors::ANTLRError;
 use crate::int_stream::{IntStream, EOF};
 use crate::lexer::{Lexer, LexerPosition, LEXER_MAX_CHAR_VALUE, LEXER_MIN_CHAR_VALUE};
 use crate::lexer_action_executor::LexerActionExecutor;
+use crate::static_lexer_dfa::{ACCEPT_BIT, NO_EDGE, STATE_MASK};
 use crate::prediction_context::PredictionContextRef;
 use crate::prediction_context::{PredictionContext, PredictionContextCache};
 use crate::token::TOKEN_EOF;
@@ -67,7 +68,6 @@ impl<'sim> ILexerATNSimulator<'sim> for LexerATNSimulator<'sim> {
     fn match_token<'input, 'arena, Input, TF>(
         &mut self,
         mode: usize,
-        //        input:&mut dyn CharStream,
         lexer: &mut impl Lexer<'input, 'arena, Input, TF>,
     ) -> Result<i32, ANTLRError>
     where
@@ -75,14 +75,18 @@ impl<'sim> ILexerATNSimulator<'sim> for LexerATNSimulator<'sim> {
         Input: CharStream<'input>,
         TF: TokenFactory<'input, 'arena> + 'arena,
     {
-        let scratch = bumpalo::Bump::new();
-
         self.mode = mode;
         let mark = lexer.input().mark();
-        //        println!("start matching on mode {}",mode);
         let result = (|| {
             self.start_index = lexer.input().index();
             self.prev_accept.reset();
+            // Table-driven fast path: the tool fully expanded this lexer's
+            // DFA at generation time (-Xstatic-dfa), so matching needs no
+            // ATN simulation, no scratch arena, and no lazy DFA states.
+            if let Some(table) = self.atn().static_lexer_dfas.mode(mode) {
+                return self.match_static(table, lexer);
+            }
+            let scratch = bumpalo::Bump::new();
             let dfa = self
                 .decision_to_dfa(mode)
                 .ok_or_else(|| ANTLRError::illegal_state("invalid mode".into()))?;
@@ -168,6 +172,137 @@ impl<'sim> LexerATNSimulator<'sim> {
     //    fn copy_state(&self, _simulator: &mut LexerATNSimulator) {
     //        unimplemented!()
     //    }
+
+    /// Token matching driven by a statically-precomputed lexer DFA table
+    /// (`-Xstatic-dfa` on a lexer grammar): one dense table lookup per
+    /// input symbol, no ATN simulation, no scratch arena, no lazily-built
+    /// DFA states. Mirrors `exec_atn` + `fail_or_accept` exactly (maximal
+    /// munch, accept fallback with position restore, lexer actions at
+    /// accept, EOF handling); the tables are built by driving the
+    /// reference simulator exhaustively at tool time, so behavior is
+    /// identical by construction. Only reachable for lexers the tool
+    /// proved need no runtime input-dependent machinery.
+    fn match_static<'input, 'arena, Input, TF>(
+        &mut self,
+        table: &'static crate::static_lexer_dfa::StaticLexerDFA,
+        lexer: &mut impl Lexer<'input, 'arena, Input, TF>,
+    ) -> Result<i32, ANTLRError>
+    where
+        'input: 'arena,
+        Input: CharStream<'input>,
+        TF: TokenFactory<'input, 'arena> + 'arena,
+    {
+        let start_index = lexer.input().index();
+        let mut line = self.current_pos.line.get();
+        let mut column = self.current_pos.char_position_in_line.get();
+        let mut s = table.start_state();
+        // (index, line, column, state) of the most recent accept state
+        // Accept states are marked by accept_type >= 0 (not != 0): a rule
+        // with a `more`/`type(...)` command accepts with token type 0 (the
+        // tool assigns such rules no token type) - e.g. a zero-length match
+        // at the start state of a mode must still count as an accept.
+        let mut prev_accept: Option<(isize, u32, i32, u16)> = if table.accept_type(s) >= 0 {
+            Some((start_index, line, column, s))
+        } else {
+            None
+        };
+
+        // The walk itself only reads the input; line/column are tracked in
+        // locals and written back to the shared position cells once, at the
+        // end. With a random-access input (InputStream) hold a local byte
+        // cursor and peek the next input byte directly - one load + high-bit
+        // test for ASCII - instead of a `la(1)` decode plus a `consume()`
+        // walk per char; other streams take the cursor-based path. On exit,
+        // `symbol` is the (unconsumed) char at the position the walk stopped.
+        let mut symbol;
+        if lexer.input().has_item_at() {
+            // Byte-cursor path: per input char, one byte peek plus one
+            // table entry (target state and accept bit in the same load).
+            let input = lexer.input();
+            let mut cursor = start_index;
+            symbol = input.item_at(cursor).unwrap_or(EOF);
+            loop {
+                let entry = table.edge_entry(s, symbol);
+                if entry == NO_EDGE {
+                    break;
+                }
+                let target = entry & STATE_MASK;
+                if symbol != EOF {
+                    if symbol == '\n' as i32 {
+                        line += 1;
+                        column = 0;
+                    } else {
+                        column += 1;
+                    }
+                    cursor += if symbol < 0x80 {
+                        1
+                    } else {
+                        char::from_u32(symbol as u32).map_or(1, |c| c.len_utf8() as isize)
+                    };
+                }
+                if entry & ACCEPT_BIT != 0 {
+                    prev_accept = Some((cursor, line, column, target));
+                    if symbol == EOF {
+                        break;
+                    }
+                }
+                symbol = input.item_at(cursor).unwrap_or(EOF);
+                s = target;
+            }
+            input.seek(cursor);
+        } else {
+            symbol = lexer.input().la(1);
+            loop {
+                let entry = table.edge_entry(s, symbol);
+                if entry == NO_EDGE {
+                    break;
+                }
+                let target = entry & STATE_MASK;
+                if symbol != EOF {
+                    if symbol == '\n' as i32 {
+                        line += 1;
+                        column = 0;
+                    } else {
+                        column += 1;
+                    }
+                    lexer.input().consume();
+                }
+                if entry & ACCEPT_BIT != 0 {
+                    prev_accept = Some((lexer.input().index(), line, column, target));
+                    if symbol == EOF {
+                        break;
+                    }
+                }
+                symbol = lexer.input().la(1);
+                s = target;
+            }
+        }
+
+        match prev_accept {
+            Some((index, accept_line, accept_column, state)) => {
+                lexer.input().seek(index);
+                self.current_pos.line.set(accept_line);
+                self.current_pos.char_position_in_line.set(accept_column);
+                // Position-independent lexer actions only (skip, mode,
+                // channel, type, ...): the tool rejected everything else,
+                // and their execution needs no match offset.
+                for &action_index in table.accept_actions(state) {
+                    self.atn().lexer_actions[action_index as usize].execute(lexer);
+                }
+                Ok(table.accept_type(state))
+            }
+            None => {
+                // Match the lazy path: on failure the position stays where
+                // the walk stopped.
+                self.current_pos.line.set(line);
+                self.current_pos.char_position_in_line.set(column);
+                if symbol == EOF && lexer.input().index() == start_index {
+                    return Ok(TOKEN_EOF);
+                }
+                Err(ANTLRError::lexer_no_alt(start_index))
+            }
+        }
+    }
 
     #[cold]
     fn match_atn<'scratch, 'input, 'arena, Input, TF>(

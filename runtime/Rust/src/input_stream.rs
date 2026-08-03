@@ -23,8 +23,28 @@ impl<'input> CharStream<'input> for InputStream<'input> {
     fn get_text(&self, start: isize, stop: isize) -> Cow<'input, str> {
         self.get_text_inner(start, stop).into()
     }
-}
 
+    #[inline]
+    fn has_item_at(&self) -> bool {
+        true
+    }
+
+    /// Direct byte peek: one load + high-bit test for ASCII (the common
+    /// case), full UTF-8 decode only above it. `index` is a byte offset
+    /// (char boundary, as everywhere in `InputStream`).
+    #[inline]
+    fn item_at(&self, index: isize) -> Option<i32> {
+        let &b = self.data_raw.as_bytes().get(index as usize)?;
+        if b < 0x80 {
+            Some(b as i32)
+        } else {
+            self.data_raw
+                .get(index as usize..)
+                .and_then(|it| it.chars().next())
+                .map(|it| it as i32)
+        }
+    }
+}
 // /// `InputStream` over byte slice
 // pub type ByteStream<'a> = InputStream<&'a [u8]>;
 // /// InputStream which treats the input as a series of Unicode code points that fit into `u8`

@@ -50,6 +50,11 @@ public class SerializedBase64ATN extends SerializedATN {
 			n = SerializedStaticDFAs.appendIntStream(
 				g.staticDecisionDFAs, g.staticPrecedenceDFAs, data, tableComments);
 		}
+		else if ( g.isLexer() && g.staticLexerDFAs!=null && g.atn==atn
+			 && factory.getGenerator().getTarget().supportsStaticDFA() ) {
+			SerializedStaticLexerDFAs.appendIntStream(g.staticLexerDFAs, data, tableComments);
+			n = g.staticLexerDFAs.length; // mode tables, for the provenance comment
+		}
 		numTables = n;
 
 		segments = CompactSerializer.encode(data.toArray());

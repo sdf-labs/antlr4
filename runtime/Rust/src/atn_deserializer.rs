@@ -45,14 +45,20 @@ impl ATNDeserializer {
     }
 
     /// Deserialize an ATN - and, when present, the statically-precomputed
-    /// SLL prediction tables (`-Xstatic-dfa`) appended after it - from the
-    /// compact base64/varint segments emitted by the tool, in one streaming
-    /// pass with no intermediate buffer.
+    /// tables (`-Xstatic-dfa`) appended after it - from the compact
+    /// base64/varint segments emitted by the tool, in one streaming pass
+    /// with no intermediate buffer. The trailing section is SLL prediction
+    /// tables for a parser ATN, lexer DFA tables for a lexer ATN.
     pub fn deserialize_compact(&self, segments: &[&str]) -> ATN {
         let mut ints = crate::serialized_ints::Decoder::new(segments).peekable();
         let mut atn = self.deserialize(&mut ints);
         if ints.peek().is_some() {
-            atn.static_dfas = crate::static_dfa::StaticDFATables::from_int_stream(&mut ints);
+            if atn.grammar_type == ATNType::Lexer {
+                atn.static_lexer_dfas =
+                    crate::static_lexer_dfa::StaticLexerDFATables::from_int_stream(&mut ints);
+            } else {
+                atn.static_dfas = crate::static_dfa::StaticDFATables::from_int_stream(&mut ints);
+            }
         }
         atn
     }

@@ -1367,7 +1367,7 @@ dbt_antlr4::impl_lexer_recog! { <lexer.name>Actions, "<lexer.name>.g4"<if(action
 
 SerializedBase64ATN(model) ::= <<
 <if(model.tableComments)>
-// the serialized ATN is followed by <model.numTables> static SLL prediction tables (-Xstatic-dfa):
+// the serialized ATN is followed by <model.numTables> static DFA table(s) (-Xstatic-dfa; parser SLL prediction or lexer mode tables):
 <model.tableComments:{c |//   <c>}; separator="\n">
 <endif>
 static ATN_SIMULATOR_MANAGER: LazyLock\<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new(&_ATN));

@@ -140,7 +140,7 @@ public class Tool {
 		new Option("log",                         "-Xlog", "dump lots of logging info to antlr-timestamp.log"),
 	    new Option("exact_output_dir",            "-Xexact-output-dir", "all output goes into -o dir regardless of paths/package"),
 	    new Option("decision_report",             "-Xdecision-report", "classify every parser decision by required static lookahead (LL(1)/LL(k)/LL(*)/ambiguous/context-sensitive) and print a report with a per-decision adaptivePredict-fallback (fb) breakout"),
-	    new Option("static_dfa",                  "-Xstatic-dfa", "precompute SLL prediction DFAs and generate table-driven prediction instead of adaptivePredict where provably behavior-preserving (Java/Rust targets)"),
+	    new Option("static_dfa",                  "-Xstatic-dfa", "precompute SLL prediction DFAs and generate table-driven prediction instead of adaptivePredict where provably behavior-preserving (Java/Rust targets); on lexer grammars, precompute the complete lexer DFA for a table-driven scanner when the lexer needs no runtime input-dependent machinery (Rust target)"),
 	};
 
 	// helper vars for option management
@@ -416,8 +416,15 @@ public class Tool {
 		}
 
 		// PRECOMPUTE STATIC SLL PREDICTION TABLES FOR SAFE NON-LL(1) DECISIONS
-		if ( static_dfa && !force_atn && !g.isLexer() && g.atn!=null ) {
-			DecisionClassifier.buildTables(g);
+		if ( static_dfa && !force_atn && g.atn!=null ) {
+			if ( g.isLexer() ) {
+				// fully expand the lexer DFA when the lexer needs no
+				// runtime input-dependent machinery (no-op otherwise)
+				org.antlr.v4.analysis.LexerDFABuilder.buildTables(g);
+			}
+			else {
+				DecisionClassifier.buildTables(g);
+			}
 		}
 
 		// GENERATE CODE

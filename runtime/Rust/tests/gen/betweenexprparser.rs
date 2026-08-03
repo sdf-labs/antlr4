@@ -1123,7 +1123,7 @@ where
 	}
 }
 
-// the serialized ATN is followed by 9 static SLL prediction tables (-Xstatic-dfa):
+// the serialized ATN is followed by 9 static DFA table(s) (-Xstatic-dfa; parser SLL prediction or lexer mode tables):
 //   decision 3: precedence-dispatched over cutoffs [1, 2], tables [4 5 6]
 //   decision 7: precedence-dispatched over cutoffs [2, 3], tables [7 8 6]
 //   decision 0: LL(k), k=1, 9 states

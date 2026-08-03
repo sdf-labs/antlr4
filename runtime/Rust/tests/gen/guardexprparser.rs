@@ -1189,7 +1189,7 @@ where
 	}
 }
 
-// the serialized ATN is followed by 5 static SLL prediction tables (-Xstatic-dfa):
+// the serialized ATN is followed by 5 static DFA table(s) (-Xstatic-dfa; parser SLL prediction or lexer mode tables):
 //   decision 5: precedence-dispatched over cutoffs [1, 2], tables [2 3 4]
 //   decision 2: LL(*) cyclic, 35 states, 6 adaptive escapes, 8 guarded takes
 //   decision 4: LL(k), k=1, 3 states

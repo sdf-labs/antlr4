@@ -210,6 +210,16 @@ public class Grammar implements AttributeResolver {
 	 */
 	public Map<Integer, org.antlr.v4.analysis.PrecedenceStaticDFA> staticPrecedenceDFAs;
 
+
+	/**
+	 * Statically-precomputed lexer DFA tables, one per lexer mode (see
+	 * {@link org.antlr.v4.analysis.LexerDFABuilder}); populated only with
+	 * -Xstatic-dfa on a lexer grammar, and only when the lexer needs no
+	 * runtime input-dependent machinery (no predicates, no position-
+	 * dependent lexer actions). Null otherwise: the runtime then keeps its
+	 * lazily-built DFA.
+	 */
+	public org.antlr.v4.analysis.StaticLexerDFA[] staticLexerDFAs;
 	/**
 	 * Prefix-factor plans of factorable decisions (see
 	 * {@link org.antlr.v4.analysis.PrefixFactorAnalyzer}), keyed by decision

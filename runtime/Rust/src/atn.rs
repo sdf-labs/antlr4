@@ -49,6 +49,13 @@ pub struct ATN {
     /// [`crate::static_dfa`].
     pub static_dfas: StaticDFATables,
 
+    /// Statically-precomputed lexer DFA tables (`-Xstatic-dfa` on a lexer
+    /// grammar), decoded from the section following the ATN in the
+    /// serialized blob; empty when the lexer was generated without them
+    /// (or its features require runtime evaluation). See
+    /// [`crate::static_lexer_dfa`].
+    pub static_lexer_dfas: crate::static_lexer_dfa::StaticLexerDFATables,
+
     /// Real-stack postfix-chase continuation sets for the guarded
     /// shared-descent dispatch, computed on first use (see
     /// [`crate::follow_sets`]).
@@ -81,6 +88,7 @@ impl ATN {
             rule_to_stop_state: Vec::new(),
             rule_to_token_type: Vec::new(),
             static_dfas: StaticDFATables::empty(),
+            static_lexer_dfas: crate::static_lexer_dfa::StaticLexerDFATables::empty(),
             follow_sets: std::sync::OnceLock::new(),
             states: Vec::new(),
         }

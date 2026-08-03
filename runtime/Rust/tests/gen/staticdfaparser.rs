@@ -1140,7 +1140,7 @@ where
 	}
 }
 
-// the serialized ATN is followed by 6 static SLL prediction tables (-Xstatic-dfa):
+// the serialized ATN is followed by 6 static DFA table(s) (-Xstatic-dfa; parser SLL prediction or lexer mode tables):
 //   decision 0: LL(k), k=2, 5 states
 //   decision 1: LL(*) cyclic, 5 states
 //   decision 3: LL(k), k=2, 4 states
