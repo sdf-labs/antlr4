@@ -189,7 +189,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule hdr*/
 		recog.base.set_state(8);
 		recog.hdr()?;
 		recog.base.set_state(10); 
@@ -198,7 +197,6 @@ where
 		loop {
 			{
 			{
-			/*InvokeRule row*/
 			recog.base.set_state(9);
 			recog.row()?;
 			}
@@ -247,7 +245,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule row*/
 		recog.base.set_state(14);
 		recog.row()?;
 		}
@@ -294,7 +291,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule field*/
 		recog.base.set_state(16);
 		recog.field()?;
 		recog.base.set_state(21);
@@ -305,7 +301,6 @@ where
 			{
 			recog.base.set_state(17);
 			recog.base.match_token(CSV_T__0,&mut recog.err_handler)?;
-			/*InvokeRule field*/
 			recog.base.set_state(18);
 			recog.field()?;
 			}

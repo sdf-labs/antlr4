@@ -203,7 +203,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule e*/
 		recog.base.set_state(6);
 		recog.e_rec(0)?;
 		recog.base.set_state(7);
@@ -340,13 +339,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> AddContextExt<'input, 'arena, 
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::AddContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -405,13 +398,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> ColContextExt<'input, 'arena, 
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::ColContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -466,13 +453,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> ParensContextExt<'input, 'aren
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::ParensContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -527,13 +508,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> SubqueryContextExt<'input, 'ar
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::SubqueryContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -592,13 +567,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> RowConstructorContextExt<'inpu
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::RowConstructorContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -657,13 +626,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> MulContextExt<'input, 'arena, 
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::MulContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -722,13 +685,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> NumContextExt<'input, 'arena, 
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::NumContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -783,13 +740,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> UnaryContextExt<'input, 'arena
             let tmp = unsafe { std::ptr::read(base_ctx) };
             EContextAll::UnaryContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut EContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -823,7 +774,6 @@ where
 		recog.err_handler.sync(&mut recog.base)?;
 		match { let _m = recog.base.dfa_predict_mask(1)?;
 		  match _m {
-		    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
 		    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [ParenExpr_T__0 | ParenExpr_T__3 | ParenExpr_ID | ParenExpr_INT].contains(&recog.input.la(2)) => {
 		        recog.base.set_state(13);
 		        let _neutral_state = recog.base.begin_neutral_parse(1);
@@ -839,16 +789,9 @@ where
 		            Ok(_node) => {
 		                if recog.base.syntax_error_count() != _neutral_state.2 {
 		                    recog.base.end_neutral_parse(&_neutral_state);
-		                    // errorful neutral parse: throw its result away and
-		                    // defer (muted, so no spurious reports escaped)
 		                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32)
 		                }
 		                else {
-		                    // the tail token decides on the post-prefix stream.
-		                    // An explicit arm (or the static default) rewinds into
-		                    // resume mode; anything else rewinds and defers to the
-		                    // adaptive engine from the decision start - no resume,
-		                    // the chosen body re-parses everything
 		                    let _tailbit = { let _t = recog.input.la(1); match _t {
 		                        ParenExpr_T__1 if !false || !recog.base.follow_contains(_t) => Some(0x4),
 		                        ParenExpr_T__2 if !false || !recog.base.follow_contains(_t) => Some(0x8),
@@ -856,7 +799,7 @@ where
 		                    } };
 		                    match _tailbit {
 		                        Some(bit) => {
-		                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e);
+		                            recog.base.start_resume(_node.as_node(), RULE_e);
 		                            recog.base.end_neutral_parse(&_neutral_state);
 		                            bit
 		                        }
@@ -870,7 +813,7 @@ where
 		        }
 		    },
 		    x if x != 0 && (x & !0x1c) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
-		    x if (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
+		    x if x == 0 || (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(1,&mut recog.base)? - 1) as u32),
 		    m => m,
 		  } } {
 		x if x == 0x1 =>{
@@ -896,7 +839,6 @@ where
 			let _local_ctx_fn = |recog: &Self| -> &'arena RowConstructorContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
 			recog.base.set_state(12);
 			recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
-			/*InvokeRule e*/
 			recog.base.set_state(13);
 			recog.e_rec(0)?;
 			recog.base.set_state(16); 
@@ -907,7 +849,6 @@ where
 				{
 				recog.base.set_state(14);
 				recog.base.match_token(ParenExpr_T__1,&mut recog.err_handler)?;
-				/*InvokeRule e*/
 				recog.base.set_state(15);
 				recog.e_rec(0)?;
 				}
@@ -927,7 +868,6 @@ where
 			let _local_ctx_fn = |recog: &Self| -> &'arena ParensContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
 			recog.base.set_state(22);
 			recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
-			/*InvokeRule e*/
 			recog.base.set_state(23);
 			recog.e_rec(0)?;
 			recog.base.set_state(24);
@@ -940,7 +880,6 @@ where
 			let _local_ctx_fn = |recog: &Self| -> &'arena SubqueryContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
 			recog.base.set_state(26);
 			recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
-			/*InvokeRule q*/
 			recog.base.set_state(27);
 			recog.q()?;
 			recog.base.set_state(28);
@@ -953,7 +892,6 @@ where
 			let _local_ctx_fn = |recog: &Self| -> &'arena UnaryContext<TF::Tok> {recog.ctx().unwrap().as_rule_context().unwrap()};
 			recog.base.set_state(30);
 			recog.base.match_token(ParenExpr_T__3,&mut recog.err_handler)?;
-			/*InvokeRule e*/
 			recog.base.set_state(31);
 			recog.e_rec(3)?;
 			}
@@ -994,7 +932,6 @@ where
 							recog.err_handler.report_match(&mut recog.base);
 							recog.base.consume(&mut recog.err_handler)?;
 						}
-						/*InvokeRule e*/
 						recog.base.set_state(36);
 						recog.e_rec(3)?;
 						}
@@ -1022,7 +959,6 @@ where
 							recog.err_handler.report_match(&mut recog.base);
 							recog.base.consume(&mut recog.err_handler)?;
 						}
-						/*InvokeRule e*/
 						recog.base.set_state(39);
 						recog.e_rec(2)?;
 						}
@@ -1158,13 +1094,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> SelectContextExt<'input, 'aren
             let tmp = unsafe { std::ptr::read(base_ctx) };
             QContextAll::SelectContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut QContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut QContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -1219,13 +1149,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> NestedContextExt<'input, 'aren
             let tmp = unsafe { std::ptr::read(base_ctx) };
             QContextAll::NestedContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut QContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut QContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -1284,13 +1208,7 @@ impl<'input: 'arena, 'arena, Tok: Token + 'input> TableContextExt<'input, 'arena
             let tmp = unsafe { std::ptr::read(base_ctx) };
             QContextAll::TableContext(tmp.morph(|ext_src| Self::new(ext_src)))
         };
-        // replace + forget, NOT assignment: the new value's children Vec
-        // was moved out of the old one, so dropping the old value would
-        // deallocate the buffer the new value references (the arena can
-        // then hand it to another node's Vec - shared-descent resume
-        // paths hit this: the decision ctx's Vec buffer is the most
-        // recent arena allocation when copy_from runs).
-        let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut QContextAll<'input, 'arena, Tok>), ctx);
+let _old = std::mem::replace(dbt_antlr4::cast_unchecked!(src => mut QContextAll<'input, 'arena, Tok>), ctx);
         std::mem::forget(_old);
         src.set_invoking_state(invoking_state);
         src.node_tag = <Self as CustomRuleContext<'input, 'arena, Tok>>::node_tag();
@@ -1343,7 +1261,6 @@ where
 		        {
 		        recog.base.set_state(48);
 		        recog.base.match_token(ParenExpr_T__0,&mut recog.err_handler)?;
-		        /*InvokeRule q*/
 		        recog.base.set_state(49);
 		        recog.q()?;
 		        recog.base.set_state(50);

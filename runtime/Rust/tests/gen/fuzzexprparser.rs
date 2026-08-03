@@ -226,7 +226,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule item*/
 		recog.base.set_state(12);
 		recog.item()?;
 		recog.base.set_state(17);
@@ -237,7 +236,6 @@ where
 			{
 			recog.base.set_state(13);
 			recog.base.match_token(FuzzExpr_T__0,&mut recog.err_handler)?;
-			/*InvokeRule item*/
 			recog.base.set_state(14);
 			recog.item()?;
 			}
@@ -301,7 +299,6 @@ where
 		recog.err_handler.sync(&mut recog.base)?;
 		match { let _m = recog.base.dfa_predict_mask(2)?;
 		  match _m {
-		    0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
 		    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 && !recog.base.resume_active() && [FuzzExpr_T__2 | FuzzExpr_T__6 | FuzzExpr_T__11 | FuzzExpr_ID | FuzzExpr_INT].contains(&recog.input.la(1)) => {
 		        recog.base.set_state(25);
 		        let _neutral_state = recog.base.begin_neutral_parse(0);
@@ -317,23 +314,16 @@ where
 		            Ok(_node) => {
 		                if recog.base.syntax_error_count() != _neutral_state.2 {
 		                    recog.base.end_neutral_parse(&_neutral_state);
-		                    // errorful neutral parse: throw its result away and
-		                    // defer (muted, so no spurious reports escaped)
 		                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
 		                }
 		                else {
-		                    // the tail token decides on the post-prefix stream.
-		                    // An explicit arm (or the static default) rewinds into
-		                    // resume mode; anything else rewinds and defers to the
-		                    // adaptive engine from the decision start - no resume,
-		                    // the chosen body re-parses everything
 		                    let _tailbit = { let _t = recog.input.la(1); match _t {
 		                        FuzzExpr_T__2 if !false || !recog.base.follow_contains(_t) => Some(0x1),
 		                        _ => Some(0x2),
 		                    } };
 		                    match _tailbit {
 		                        Some(bit) => {
-		                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_e);
+		                            recog.base.start_resume(_node.as_node(), RULE_e);
 		                            recog.base.end_neutral_parse(&_neutral_state);
 		                            bit
 		                        }
@@ -362,23 +352,16 @@ where
 		            Ok(_node) => {
 		                if recog.base.syntax_error_count() != _neutral_state.2 {
 		                    recog.base.end_neutral_parse(&_neutral_state);
-		                    // errorful neutral parse: throw its result away and
-		                    // defer (muted, so no spurious reports escaped)
 		                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
 		                }
 		                else {
-		                    // the tail token decides on the post-prefix stream.
-		                    // An explicit arm (or the static default) rewinds into
-		                    // resume mode; anything else rewinds and defers to the
-		                    // adaptive engine from the decision start - no resume,
-		                    // the chosen body re-parses everything
 		                    let _tailbit = { let _t = recog.input.la(1); match _t {
 		                        FuzzExpr_T__2 if !true || !recog.base.follow_contains(_t) => Some(0x1),
 		                        _ => None,
 		                    } };
 		                    match _tailbit {
 		                        Some(bit) => {
-		                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_atom);
+		                            recog.base.start_resume(_node.as_node(), RULE_atom);
 		                            recog.base.end_neutral_parse(&_neutral_state);
 		                            bit
 		                        }
@@ -407,23 +390,16 @@ where
 		            Ok(_node) => {
 		                if recog.base.syntax_error_count() != _neutral_state.2 {
 		                    recog.base.end_neutral_parse(&_neutral_state);
-		                    // errorful neutral parse: throw its result away and
-		                    // defer (muted, so no spurious reports escaped)
 		                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
 		                }
 		                else {
-		                    // the tail token decides on the post-prefix stream.
-		                    // An explicit arm (or the static default) rewinds into
-		                    // resume mode; anything else rewinds and defers to the
-		                    // adaptive engine from the decision start - no resume,
-		                    // the chosen body re-parses everything
 		                    let _tailbit = { let _t = recog.input.la(1); match _t {
 		                        FuzzExpr_T__2 if !true || !recog.base.follow_contains(_t) => Some(0x1),
 		                        _ => None,
 		                    } };
 		                    match _tailbit {
 		                        Some(bit) => {
-		                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_q);
+		                            recog.base.start_resume(_node.as_node(), RULE_q);
 		                            recog.base.end_neutral_parse(&_neutral_state);
 		                            bit
 		                        }
@@ -452,23 +428,16 @@ where
 		            Ok(_node) => {
 		                if recog.base.syntax_error_count() != _neutral_state.2 {
 		                    recog.base.end_neutral_parse(&_neutral_state);
-		                    // errorful neutral parse: throw its result away and
-		                    // defer (muted, so no spurious reports escaped)
 		                    1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32)
 		                }
 		                else {
-		                    // the tail token decides on the post-prefix stream.
-		                    // An explicit arm (or the static default) rewinds into
-		                    // resume mode; anything else rewinds and defers to the
-		                    // adaptive engine from the decision start - no resume,
-		                    // the chosen body re-parses everything
 		                    let _tailbit = { let _t = recog.input.la(1); match _t {
 		                        FuzzExpr_T__2 if !true || !recog.base.follow_contains(_t) => Some(0x1),
 		                        _ => None,
 		                    } };
 		                    match _tailbit {
 		                        Some(bit) => {
-		                            recog.base.start_resume(dbt_antlr4::tree::NodeInner::as_node(_node), RULE_name);
+		                            recog.base.start_resume(_node.as_node(), RULE_name);
 		                            recog.base.end_neutral_parse(&_neutral_state);
 		                            bit
 		                        }
@@ -482,19 +451,17 @@ where
 		        }
 		    },
 		    x if x != 0 && (x & !0x3) == 0 && (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
-		    x if (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
+		    x if x == 0 || (x & (x-1)) != 0 => 1u64.wrapping_shl((recog.get_interpreter().adaptive_predict(2,&mut recog.base)? - 1) as u32),
 		    m => m,
 		  } } {
 		x if x == 0x1 =>{
 			/*------- Outer Most Alt 1 -------*/
 			unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 			{
-			/*InvokeRule e*/
 			recog.base.set_state(25);
 			recog.e_rec(0)?;
 			recog.base.set_state(26);
 			recog.base.match_token(FuzzExpr_T__2,&mut recog.err_handler)?;
-			/*InvokeRule name*/
 			recog.base.set_state(27);
 			recog.name()?;
 			}
@@ -503,7 +470,6 @@ where
 			/*------- Outer Most Alt 2 -------*/
 			unsafe { recog.ctx_mut().unwrap().set_alt_number(2); }
 			{
-			/*InvokeRule e*/
 			recog.base.set_state(29);
 			recog.e_rec(0)?;
 			}
@@ -611,7 +577,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule name*/
 		recog.base.set_state(34);
 		recog.name()?;
 		recog.base.set_state(39);
@@ -623,7 +588,6 @@ where
 				{
 				recog.base.set_state(35);
 				recog.base.match_token(FuzzExpr_T__3,&mut recog.err_handler)?;
-				/*InvokeRule name*/
 				recog.base.set_state(36);
 				recog.name()?;
 				}
@@ -697,13 +661,11 @@ where
 		        {
 		        recog.base.set_state(43);
 		        recog.base.match_token(FuzzExpr_T__6,&mut recog.err_handler)?;
-		        /*InvokeRule e*/
 		        recog.base.set_state(44);
 		        recog.e_rec(5)?;
 		        }}
 		    FuzzExpr_T__2 |FuzzExpr_T__11 |FuzzExpr_ID |FuzzExpr_INT  => {
 		        {
-		        /*InvokeRule atom*/
 		        recog.base.set_state(45);
 		        recog.atom()?;
 		        }}
@@ -733,7 +695,6 @@ where
 						}
 						recog.base.set_state(49);
 						recog.base.match_token(FuzzExpr_T__7,&mut recog.err_handler)?;
-						/*InvokeRule e*/
 						recog.base.set_state(50);
 						recog.e_rec(4)?;
 						}
@@ -759,7 +720,6 @@ where
 							recog.err_handler.report_match(&mut recog.base);
 							recog.base.consume(&mut recog.err_handler)?;
 						}
-						/*InvokeRule e*/
 						recog.base.set_state(53);
 						recog.e_rec(4)?;
 						}
@@ -785,7 +745,6 @@ where
 							recog.err_handler.report_match(&mut recog.base);
 							recog.base.consume(&mut recog.err_handler)?;
 						}
-						/*InvokeRule e*/
 						recog.base.set_state(56);
 						recog.e_rec(3)?;
 						}
@@ -803,7 +762,6 @@ where
 						}
 						recog.base.set_state(58);
 						recog.base.match_token(FuzzExpr_T__4,&mut recog.err_handler)?;
-						/*InvokeRule e*/
 						recog.base.set_state(59);
 						recog.e_rec(0)?;
 						recog.base.set_state(60);
@@ -889,7 +847,6 @@ where
 				/*------- Outer Most Alt 1 -------*/
 				unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 				{
-				/*InvokeRule q*/
 				recog.base.set_state(67);
 				recog.q()?;
 				}
@@ -910,7 +867,6 @@ where
 				{
 				recog.base.set_state(69);
 				recog.base.match_token(FuzzExpr_T__11,&mut recog.err_handler)?;
-				/*InvokeRule e*/
 				recog.base.set_state(70);
 				recog.e_rec(0)?;
 				recog.base.set_state(71);
@@ -931,7 +887,6 @@ where
 				_la = recog.base.input.la(1);
 				if (((_la) & !0x3f) == 0 && ((1usize << _la) & 53384) != 0) {
 					{
-					/*InvokeRule e*/
 					recog.base.set_state(75);
 					recog.e_rec(0)?;
 					recog.base.set_state(80);
@@ -942,7 +897,6 @@ where
 						{
 						recog.base.set_state(76);
 						recog.base.match_token(FuzzExpr_T__0,&mut recog.err_handler)?;
-						/*InvokeRule e*/
 						recog.base.set_state(77);
 						recog.e_rec(0)?;
 						}

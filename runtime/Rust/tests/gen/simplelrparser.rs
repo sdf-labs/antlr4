@@ -178,7 +178,6 @@ where
 		/*------- Outer Most Alt 1 -------*/
 		unsafe { recog.ctx_mut().unwrap().set_alt_number(1); }
 		{
-		/*InvokeRule a*/
 		recog.base.set_state(4);
 		recog.a_rec(0)?;
 		}
