@@ -6,9 +6,11 @@
 //! it fully expands the DFA the lazy [`crate::lexer_atn_simulator`] would
 //! otherwise build at runtime - by driving the reference simulator over the
 //! whole input alphabet, so maximal-munch, rule-priority, non-greedy, and
-//! lexer-action semantics are identical by construction - and appends the
-//! tables to the serialized ATN blob (see the tool's `LexerDFABuilder` and
-//! `SerializedStaticLexerDFAs` for the stream format).
+//! lexer-action semantics are identical by construction. Fully-static
+//! lexers embed *only* the tables - no ATN at all (see
+//! [`StaticLexerTables`]); lexers generated before that split carry them
+//! appended to the serialized ATN blob (see the tool's `LexerDFABuilder`
+//! and `SerializedStaticLexerDFAs` for the stream format).
 //!
 //! The walker in [`crate::lexer_atn_simulator::LexerATNSimulator`] then
 //! runs one tight loop per token: a dense per-state row indexed directly by
@@ -60,7 +62,9 @@ pub struct StaticLexerDFA {
     accept_type: Vec<i32>,
     /// Offset of each accept state's action list in `action_lists`; -1 = none.
     accept_actions: Vec<i32>,
-    /// Length-prefixed lists of lexer action indices (into `ATN::lexer_actions`).
+    /// Length-prefixed lists of lexer action indices (into the enclosing
+    /// `ATN::lexer_actions` for ATN-embedded tables, or into
+    /// [`StaticLexerTables::lexer_actions`] for standalone ones).
     action_lists: Vec<i32>,
 }
 
@@ -88,6 +92,13 @@ impl StaticLexerDFATables {
             "static lexer DFA table format version mismatch: lexer was generated \
              with a different ANTLR tool version, please regenerate"
         );
+        Self::read_modes(&mut next)
+    }
+
+    /// Read the `numModes` + per-mode table section from `next` - the
+    /// layout shared by the ATN-embedded (v3) stream and the standalone
+    /// ATN-less (v4) stream.
+    fn read_modes(next: &mut impl FnMut() -> i32) -> Self {
         let num_modes = next() as usize;
         let mut modes = Vec::with_capacity(num_modes);
         for _ in 0..num_modes {
@@ -165,6 +176,75 @@ impl StaticLexerDFATables {
     /// Number of serialized mode tables.
     pub fn num_modes(&self) -> usize {
         self.modes.len()
+    }
+}
+
+/// Everything an ATN-less generated lexer needs at runtime: the static
+/// mode tables plus the (position-independent) lexer actions the accept
+/// states reference.
+///
+/// When the tool proves a lexer fully static (`-Xstatic-dfa`), the
+/// generated code embeds *only* this stream - no ATN at all - and drives
+/// the simulator off it (see
+/// [`crate::atn_simulator::LexerATNSimulatorManager::new_static_lexer`]).
+/// Accept-action indices in the tables resolve against
+/// [`StaticLexerTables::lexer_actions`] here (for lexers generated before
+/// this split - tables embedded after the ATN, format v3 - they resolve
+/// against `ATN::lexer_actions` instead).
+///
+/// Standalone stream layout: [`TABLES_FORMAT_VERSION`], then the same
+/// `numModes` + per-mode table section as the embedded v3 stream, then
+/// `numActions` and, per action, the `(type, data1, data2)` triple the
+/// ATN deserializer uses for lexer actions.
+#[derive(Debug)]
+pub struct StaticLexerTables {
+    dfas: StaticLexerDFATables,
+    lexer_actions: Vec<crate::lexer_action::LexerAction<'static>>,
+}
+
+const TABLES_FORMAT_VERSION: i32 = 4;
+
+impl StaticLexerTables {
+    /// Decode the standalone (ATN-less) tables blob embedded in generated
+    /// lexer code, in one streaming pass with no intermediate buffer.
+    ///
+    /// Panics on malformed input or a format-version mismatch: the blob is
+    /// generated together with the lexer that embeds it, so any failure is
+    /// a build inconsistency, not a runtime condition.
+    pub fn deserialize_compact(segments: &[&str]) -> Self {
+        Self::from_int_stream(&mut crate::serialized_ints::Decoder::new(segments))
+    }
+
+    /// Build from the (already varint-decoded) logical int stream,
+    /// consuming it to the end.
+    pub fn from_int_stream(ints: &mut impl Iterator<Item = i32>) -> Self {
+        let mut next = || ints.next().expect("truncated static lexer table data");
+        let version = next();
+        assert_eq!(
+            version, TABLES_FORMAT_VERSION,
+            "static lexer table format version mismatch: lexer was generated \
+             with a different ANTLR tool version, please regenerate"
+        );
+        let dfas = StaticLexerDFATables::read_modes(&mut next);
+        let num_actions = next() as usize;
+        let mut lexer_actions = Vec::with_capacity(num_actions);
+        for _ in 0..num_actions {
+            let (ty, data1, data2) = (next(), next(), next());
+            lexer_actions.push(crate::lexer_action::LexerAction::from_serialized(ty, data1, data2));
+        }
+        Self { dfas, lexer_actions }
+    }
+
+    /// The table for lexer mode `m`, if one was serialized.
+    #[inline]
+    pub fn mode(&self, m: usize) -> Option<&StaticLexerDFA> {
+        self.dfas.mode(m)
+    }
+
+    /// The lexer actions the tables' accept-action indices reference.
+    #[inline]
+    pub(crate) fn lexer_actions(&self) -> &[crate::lexer_action::LexerAction<'static>] {
+        &self.lexer_actions
     }
 }
 

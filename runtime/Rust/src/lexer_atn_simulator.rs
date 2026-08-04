@@ -83,8 +83,19 @@ impl<'sim> ILexerATNSimulator<'sim> for LexerATNSimulator<'sim> {
             // Table-driven fast path: the tool fully expanded this lexer's
             // DFA at generation time (-Xstatic-dfa), so matching needs no
             // ATN simulation, no scratch arena, and no lazy DFA states.
+            if let Some(tables) = self.base.static_lexer_tables {
+                // ATN-less lexer: the standalone tables are complete (the
+                // tool gates on the whole lexer), so never touch the ATN.
+                let table = tables
+                    .mode(mode)
+                    .ok_or_else(|| ANTLRError::illegal_state("invalid mode".into()))?;
+                return self.match_static(table, tables.lexer_actions(), lexer);
+            }
+            // Tables embedded after the ATN (generated before the ATN-less
+            // split): accept actions resolve against the ATN's lexer actions.
             if let Some(table) = self.atn().static_lexer_dfas.mode(mode) {
-                return self.match_static(table, lexer);
+                let actions = &self.atn().lexer_actions;
+                return self.match_static(table, actions, lexer);
             }
             let scratch = bumpalo::Bump::new();
             let dfa = self
@@ -185,6 +196,7 @@ impl<'sim> LexerATNSimulator<'sim> {
     fn match_static<'input, 'arena, Input, TF>(
         &mut self,
         table: &'static crate::static_lexer_dfa::StaticLexerDFA,
+        actions: &'static [crate::lexer_action::LexerAction<'static>],
         lexer: &mut impl Lexer<'input, 'arena, Input, TF>,
     ) -> Result<i32, ANTLRError>
     where
@@ -287,7 +299,7 @@ impl<'sim> LexerATNSimulator<'sim> {
                 // channel, type, ...): the tool rejected everything else,
                 // and their execution needs no match offset.
                 for &action_index in table.accept_actions(state) {
-                    self.atn().lexer_actions[action_index as usize].execute(lexer);
+                    actions[action_index as usize].execute(lexer);
                 }
                 Ok(table.accept_type(state))
             }

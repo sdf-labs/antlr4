@@ -36,6 +36,27 @@ pub(crate) struct LexerIndexedCustomAction<'ephemeral> {
 }
 
 impl<'ephemeral> LexerAction<'ephemeral> {
+    /// Rebuild a serialized lexer action from its (type, data1, data2)
+    /// triple - the same encoding the ATN deserializer uses for the ATN's
+    /// lexer-action section, reused by the standalone static lexer tables
+    /// ([`crate::static_lexer_dfa::StaticLexerTables`]).
+    pub(crate) fn from_serialized(action_type: i32, data1: i32, data2: i32) -> LexerAction<'static> {
+        match action_type {
+            LEXER_ACTION_TYPE_CHANNEL => LexerAction::Channel(data1),
+            LEXER_ACTION_TYPE_CUSTOM => LexerAction::Custom {
+                rule_index: data1,
+                action_index: data2,
+            },
+            LEXER_ACTION_TYPE_MODE => LexerAction::Mode(data1),
+            LEXER_ACTION_TYPE_MORE => LexerAction::More,
+            LEXER_ACTION_TYPE_POP_MODE => LexerAction::PopMode,
+            LEXER_ACTION_TYPE_PUSH_MODE => LexerAction::PushMode(data1),
+            LEXER_ACTION_TYPE_SKIP => LexerAction::Skip,
+            LEXER_ACTION_TYPE_TYPE => LexerAction::Type(data1),
+            _ => panic!("invalid action type {}", action_type),
+        }
+    }
+
     //    fn get_action_type(&self) -> i32 {
     //        unimplemented!()
     ////        unsafe {discriminant_value(self)} as i32

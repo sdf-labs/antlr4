@@ -503,19 +503,6 @@ impl ATNDeserializer {
         data1: i32,
         data2: i32,
     ) -> LexerAction<'static> {
-        match action_type {
-            LEXER_ACTION_TYPE_CHANNEL => LexerAction::Channel(data1),
-            LEXER_ACTION_TYPE_CUSTOM => LexerAction::Custom {
-                rule_index: data1,
-                action_index: data2,
-            },
-            LEXER_ACTION_TYPE_MODE => LexerAction::Mode(data1),
-            LEXER_ACTION_TYPE_MORE => LexerAction::More,
-            LEXER_ACTION_TYPE_POP_MODE => LexerAction::PopMode,
-            LEXER_ACTION_TYPE_PUSH_MODE => LexerAction::PushMode(data1),
-            LEXER_ACTION_TYPE_SKIP => LexerAction::Skip,
-            LEXER_ACTION_TYPE_TYPE => LexerAction::Type(data1),
-            _ => panic!("invalid action type {}", action_type),
-        }
+        LexerAction::from_serialized(action_type, data1, data2)
     }
 }

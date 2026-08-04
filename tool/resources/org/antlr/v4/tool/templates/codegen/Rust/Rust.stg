@@ -1366,6 +1366,18 @@ dbt_antlr4::impl_lexer_recog! { <lexer.name>Actions, "<lexer.name>.g4"<if(action
 >>
 
 SerializedBase64ATN(model) ::= <<
+<if(model.omitATN)>
+// fully table-driven lexer (-Xstatic-dfa): no ATN is emitted; the blob holds only
+// the static lexer DFA tables (<model.numTables> mode table(s)) and the lexer's
+// position-independent lexer actions:
+<model.tableComments:{c |//   <c>}; separator="\n">
+static ATN_SIMULATOR_MANAGER: LazyLock\<ATNSimulatorManager> = LazyLock::new(|| ATNSimulatorManager::new_static_lexer(&_STATIC_LEXER_TABLES));
+static _STATIC_LEXER_TABLES: LazyLock\<StaticLexerTables> =
+    LazyLock::new(|| StaticLexerTables::deserialize_compact(&_serializedLexerTables));
+static _serializedLexerTables: [&'static str; <length(model.segments)>] = [
+    <model.segments:{s |"<s>"}; separator=",\n">
+];
+<else>
 <if(model.tableComments)>
 // the serialized ATN is followed by <model.numTables> static DFA table(s) (-Xstatic-dfa; parser SLL prediction or lexer mode tables):
 <model.tableComments:{c |//   <c>}; separator="\n">
@@ -1376,6 +1388,7 @@ static _ATN: LazyLock\<ATN> =
 static _serializedATN: [&'static str; <length(model.segments)>] = [
     <model.segments:{s |"<s>"}; separator=",\n">
 ];
+<endif>
 >>
 
 /** Using a type to init value map, try to init a type; if not in table

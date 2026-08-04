@@ -52,8 +52,11 @@ pub struct ATN {
     /// Statically-precomputed lexer DFA tables (`-Xstatic-dfa` on a lexer
     /// grammar), decoded from the section following the ATN in the
     /// serialized blob; empty when the lexer was generated without them
-    /// (or its features require runtime evaluation). See
-    /// [`crate::static_lexer_dfa`].
+    /// (or its features require runtime evaluation). Lexers generated
+    /// after the ATN-less split embed no ATN at all and instead hand
+    /// [`crate::static_lexer_dfa::StaticLexerTables`] straight to
+    /// [`crate::atn_simulator::LexerATNSimulatorManager::new_static_lexer`].
+    /// See [`crate::static_lexer_dfa`].
     pub static_lexer_dfas: crate::static_lexer_dfa::StaticLexerDFATables,
 
     /// Real-stack postfix-chase continuation sets for the guarded
