@@ -1137,6 +1137,39 @@ public enum ErrorType {
 			ErrorSeverity.WARNING
 	),
 
+	/**
+	 * Compiler Warning 188.
+	 *
+	 * <p>The lexer uses a feature that prevents {@code -Xstatic-dfa} from
+	 * precomputing the complete lexer DFA (a predicate, an embedded
+	 * position-dependent action, or a recursive lexer rule); the generated
+	 * lexer silently falls back to the lazy simulator. One warning is emitted
+	 * per reason, located at the offending rule or action.</p>
+	 *
+	 * <pre>
+	 * // warning 188 (on BRACKETED_COMMENT):
+	 * BRACKETED_COMMENT: '/*' ( BRACKETED_COMMENT | . )*? '/&#42;';
+	 * </pre>
+	 */
+	STATIC_LEXER_DFA_INELIGIBLE(
+			188,
+			"-Xstatic-dfa: <arg>; generated lexer will use the lazy simulator",
+			ErrorSeverity.WARNING
+	),
+
+	/**
+	 * Compiler Warning 189.
+	 *
+	 * <p>{@code -Xstatic-dfa} static lexer DFA expansion exceeded the
+	 * per-mode state cap, so no tables were generated; the generated lexer
+	 * silently falls back to the lazy simulator.</p>
+	 */
+	STATIC_LEXER_DFA_STATE_CAP(
+			189,
+			"-Xstatic-dfa: static lexer DFA expansion of mode <arg> exceeded the cap of <arg2> states; generated lexer will use the lazy simulator (raise the cap with -Dantlr.lexerdfa.maxStates)",
+			ErrorSeverity.WARNING
+	),
+
 	/*
 	 * Backward incompatibility errors
 	 */

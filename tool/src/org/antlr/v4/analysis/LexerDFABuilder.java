@@ -6,14 +6,15 @@
 
 package org.antlr.v4.analysis;
 
+import org.antlr.runtime.Token;
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.IntStream;
-import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.atn.ATN;
 import org.antlr.v4.runtime.atn.ATNConfig;
 import org.antlr.v4.runtime.atn.ATNConfigSet;
 import org.antlr.v4.runtime.atn.ATNSimulator;
 import org.antlr.v4.runtime.atn.ATNState;
+import org.antlr.v4.runtime.atn.ActionTransition;
 import org.antlr.v4.runtime.atn.AtomTransition;
 import org.antlr.v4.runtime.atn.LexerATNSimulator;
 import org.antlr.v4.runtime.atn.NotSetTransition;
@@ -30,15 +31,24 @@ import org.antlr.v4.runtime.atn.LexerAction;
 import org.antlr.v4.runtime.atn.LexerActionExecutor;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.misc.IntervalSet;
+import org.antlr.v4.tool.ErrorType;
 import org.antlr.v4.tool.Grammar;
+import org.antlr.v4.tool.LexerGrammar;
+import org.antlr.v4.tool.ast.GrammarAST;
+import org.antlr.v4.tool.Rule;
+import org.antlr.v4.tool.ast.ActionAST;
+import org.antlr.v4.tool.ast.PredAST;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -93,40 +103,118 @@ public class LexerDFABuilder {
 
 	private final ATN atn;
 
+	/** Mode whose expansion tripped {@link #maxStates}, or -1. */
+	private int capExceededMode = -1;
 	private LexerDFABuilder(ATN atn) {
 		this.atn = atn;
 	}
 
 	/**
 	 * Build static lexer DFA tables for {@code g} and store them in
-	 * {@link Grammar#staticLexerDFAs}; no-op (field stays null) when the
-	 * lexer is not eligible.
+	 * {@link Grammar#staticLexerDFAs}. When no tables are generated (the
+	 * lexer is ineligible or a state cap trips), emit one warning per reason
+	 * with grammar locations instead of silently falling back.
 	 */
 	public static void buildTables(Grammar g) {
 		LexerDFABuilder builder = new LexerDFABuilder(g.atn);
+		List<Ineligibility> reasons = builder.collectIneligibility(g);
+		if (!reasons.isEmpty()) {
+			for (Ineligibility reason : reasons) {
+				g.tool.errMgr.grammarError(ErrorType.STATIC_LEXER_DFA_INELIGIBLE,
+					g.fileName, reason.token, reason.reason);
+			}
+			return;
+		}
 		StaticLexerDFA[] tables = builder.build();
 		if (tables != null) {
 			g.staticLexerDFAs = tables;
 		}
+		else {
+			g.tool.errMgr.toolError(ErrorType.STATIC_LEXER_DFA_STATE_CAP,
+				builder.modeName(g, builder.capExceededMode), builder.maxStates);
+		}
 	}
 
-	/** True when no feature of this lexer ATN requires runtime evaluation. */
-	private boolean eligible() {
+	/** A single reason this lexer cannot be fully table-driven. */
+	private static class Ineligibility implements Comparable<Ineligibility> {
+		final int ruleIndex;
+		/** Location of the offending rule or action (never null). */
+		final Token token;
+		final String reason;
+
+		Ineligibility(int ruleIndex, Token token, String reason) {
+			this.ruleIndex = ruleIndex;
+			this.token = token;
+			this.reason = reason;
+		}
+
+		/** Order by grammar location (line, then column). */
+		@Override public int compareTo(Ineligibility o) {
+			int d = token.getLine() - o.token.getLine();
+			return d != 0 ? d : token.getCharPositionInLine() - o.token.getCharPositionInLine();
+		}
+	}
+
+	/**
+	 * Every reason this lexer ATN needs runtime evaluation, in grammar order;
+	 * empty when the lexer is eligible for static table expansion.
+	 */
+	private List<Ineligibility> collectIneligibility(Grammar g) {
+		List<Ineligibility> reasons = new ArrayList<Ineligibility>();
+		// One warning per (rule, kind); a rule with several predicates gets one.
+		Set<Integer> predRules = new LinkedHashSet<Integer>();
+		Set<Integer> actionRules = new LinkedHashSet<Integer>();
 		for (ATNState s : atn.states) {
 			if (s == null) continue;
 			for (Transition t : s.getTransitions()) {
-				if (t instanceof PredicateTransition) return false;
+				if (t instanceof PredicateTransition) {
+					predRules.add(s.ruleIndex);
+				}
+				if (t instanceof ActionTransition
+					&& atn.lexerActions[((ActionTransition) t).actionIndex].isPositionDependent()) {
+					actionRules.add(s.ruleIndex);
+				}
 			}
 		}
-		for (LexerAction action : atn.lexerActions) {
-			if (action.isPositionDependent()) return false;
+		for (Integer ruleIndex : predRules) {
+			Rule r = g.getRule(ruleIndex);
+			reasons.add(new Ineligibility(ruleIndex, actionToken(r, true),
+				"lexer rule " + r.name + " contains a predicate ({...}?) that is evaluated at runtime"));
 		}
-
-		return !hasRecursiveRule();
+		for (Integer ruleIndex : actionRules) {
+			Rule r = g.getRule(ruleIndex);
+			reasons.add(new Ineligibility(ruleIndex, actionToken(r, false),
+				"lexer rule " + r.name + " contains an embedded action ({...}) whose effect may depend on the input position"));
+		}
+		for (Integer ruleIndex : recursiveRules()) {
+			Rule r = g.getRule(ruleIndex);
+			reasons.add(new Ineligibility(ruleIndex, ruleNameToken(r),
+				"lexer rule " + r.name + " can recursively invoke itself (recursive rules have no finite DFA expansion)"));
+		}
+		Collections.sort(reasons);
+		return reasons;
 	}
 
-	/** True when some lexer rule can (transitively) invoke itself. */
-	private boolean hasRecursiveRule() {
+	/** Location of {@code r}'s name in the grammar source. */
+	private static Token ruleNameToken(Rule r) {
+		return ((GrammarAST) r.ast.getChild(0)).getToken();
+	}
+
+	/**
+	 * Location of the first predicate ({@code predicates=true}) or embedded
+	 * action in {@code r}, falling back to the rule name token.
+	 */
+	private static Token actionToken(Rule r, boolean predicates) {
+		for (ActionAST a : r.actions) {
+			if ((a instanceof PredAST) == predicates && a.getToken() != null) {
+				return a.getToken();
+			}
+		}
+		return ruleNameToken(r);
+	}
+
+	/** Indexes of all lexer rules that can (transitively) invoke themselves. */
+	private Set<Integer> recursiveRules() {
 		int numRules = atn.ruleToStartState.length;
 		List<List<Integer>> calls = new ArrayList<List<Integer>>(numRules);
 		for (int i = 0; i < numRules; i++) calls.add(new ArrayList<Integer>());
@@ -139,24 +227,32 @@ public class LexerDFABuilder {
 			}
 		}
 		// DFS from each rule; a cycle back to the start rule = recursion.
+		Set<Integer> recursive = new LinkedHashSet<Integer>();
 		for (int start = 0; start < numRules; start++) {
 			if (calls.get(start).isEmpty()) continue;
 			boolean[] seen = new boolean[numRules];
 			List<Integer> stack = new ArrayList<Integer>(calls.get(start));
 			while (!stack.isEmpty()) {
 				int r = stack.remove(stack.size() - 1);
-				if (r == start) return true;
+				if (r == start) { recursive.add(start); break; }
 				if (seen[r]) continue;
 				seen[r] = true;
 				stack.addAll(calls.get(r));
 			}
 		}
-		return false;
+		return recursive;
+	}
+
+	/** Display name of lexer mode {@code mode} for diagnostics. */
+	private static String modeName(Grammar g, int mode) {
+		if (g instanceof LexerGrammar) {
+			List<String> names = new ArrayList<String>(((LexerGrammar) g).modes.keySet());
+			if (mode >= 0 && mode < names.size()) return names.get(mode);
+		}
+		return String.valueOf(mode);
 	}
 
 	private StaticLexerDFA[] build() {
-		if (!eligible()) return null;
-
 		int numModes = atn.modeToStartState.size();
 		DFA[] decisionToDFA = new DFA[numModes];
 		for (int m = 0; m < numModes; m++) {
@@ -191,7 +287,7 @@ public class LexerDFABuilder {
 		while (!work.isEmpty()) {
 			DFAState s = work.poll();
 			int si = ids.get(s);
-			if (states.size() > maxStates) return null;
+			if (states.size() > maxStates) { capExceededMode = mode; return null; }
 
 			int[] ascii = new int[StaticLexerDFA.ASCII_MAX + 1];
 			Arrays.fill(ascii, -1);
