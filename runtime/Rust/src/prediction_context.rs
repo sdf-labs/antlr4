@@ -266,10 +266,7 @@ impl<'ephemeral> PredictionContext<'ephemeral> {
                 }
             }
         };
-        assert_ne!(r.hash_code(), 0);
 
-        //            cache.entry(a.clone()).or_insert_with(||HashMap::new())
-        //                .insert(b.clone(),r.clone());
         cache.insert(MergeKey::new(a, b), r);
 
         r
